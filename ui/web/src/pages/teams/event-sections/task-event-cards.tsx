@@ -18,8 +18,16 @@ export function TaskEventCard({ entry, resolveAgent }: Props) {
         <Badge variant={taskStatusBadgeVariant(p.status)} className="shrink-0 text-xs">
           {p.status}
         </Badge>
+        {p.channel && (
+          <Badge variant="outline" className="shrink-0 text-xs">{p.channel}</Badge>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+        {p.task_id && (
+          <span className="shrink-0">
+            task: <span className="font-mono">{p.task_id.slice(0, 8)}</span>
+          </span>
+        )}
         {p.owner_agent_key && <span className="truncate">Owner: {owner}</span>}
         {p.reason && <span className="break-words">Reason: {p.reason}</span>}
       </div>

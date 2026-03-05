@@ -49,11 +49,19 @@ function DelegationLifecycleCard({ entry, resolveAgent }: Props) {
             {p.mode}
           </Badge>
         )}
+        {p.channel && (
+          <Badge variant="outline" className="shrink-0 text-xs">{p.channel}</Badge>
+        )}
       </div>
       {p.task && <p className="break-words text-xs text-muted-foreground line-clamp-2">{p.task}</p>}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+        {p.delegation_id && (
+          <span className="shrink-0">
+            deleg: <span className="font-mono">{p.delegation_id.slice(0, 8)}</span>
+          </span>
+        )}
         {p.elapsed_ms != null && p.elapsed_ms > 0 && <span>{formatDuration(p.elapsed_ms)}</span>}
-        {p.error && <span className="break-all text-destructive">{p.error}</span>}
+        {p.error && <span className="break-words text-destructive">{p.error}</span>}
       </div>
     </div>
   );
@@ -97,11 +105,19 @@ function DelegationAccumulatedCard({ payload: p, resolveAgent }: { payload: Dele
 function DelegationAnnounceCard({ payload: p, resolveAgent }: { payload: DelegationAnnouncePayload } & ResolverProp) {
   return (
     <div className="space-y-1.5 text-sm">
-      <p className="text-muted-foreground">
-        <span className="font-medium text-foreground">{p.source_display_name || resolveAgent(p.source_agent_key)}</span>
-        {" "}announcing {p.results.length} result(s)
-        <span className="ml-1 text-xs">({formatDuration(p.total_elapsed_ms)})</span>
-      </p>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        <span className="font-medium">{p.source_display_name || resolveAgent(p.source_agent_key)}</span>
+        <span className="text-muted-foreground">announcing {p.results.length} result(s)</span>
+        <span className="text-xs text-muted-foreground">({formatDuration(p.total_elapsed_ms)})</span>
+        {p.has_media && (
+          <Badge variant="outline" className="shrink-0 text-xs">media</Badge>
+        )}
+        {p.completed_task_ids && p.completed_task_ids.length > 0 && (
+          <Badge variant="success" className="shrink-0 text-xs">
+            {p.completed_task_ids.length} task(s) auto-completed
+          </Badge>
+        )}
+      </div>
       <div className="space-y-1">
         {p.results.map((r) => (
           <div key={r.agent_key} className="min-w-0 text-xs">
