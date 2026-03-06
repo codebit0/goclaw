@@ -3,6 +3,7 @@ package methods
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/nextlevelbuilder/goclaw/internal/gateway"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
@@ -24,6 +25,7 @@ func (m *LogsMethods) Register(router *gateway.MethodRouter) {
 func (m *LogsMethods) handleTail(_ context.Context, client *gateway.Client, req *protocol.RequestFrame) {
 	var params struct {
 		Action string `json:"action"`
+		Level  string `json:"level"` // "debug", "info", "warn", "error" (default: "info")
 	}
 	if req.Params != nil {
 		json.Unmarshal(req.Params, &params)
@@ -31,9 +33,11 @@ func (m *LogsMethods) handleTail(_ context.Context, client *gateway.Client, req 
 
 	switch params.Action {
 	case "start":
-		m.logTee.Subscribe(client)
+		level := parseLogLevel(params.Level)
+		m.logTee.Subscribe(client, level)
 		client.SendResponse(protocol.NewOKResponse(req.ID, map[string]interface{}{
 			"status": "tailing",
+			"level":  params.Level,
 		}))
 	case "stop":
 		m.logTee.Unsubscribe(client.ID())
@@ -46,5 +50,18 @@ func (m *LogsMethods) handleTail(_ context.Context, client *gateway.Client, req 
 			protocol.ErrInvalidRequest,
 			"action must be 'start' or 'stop'",
 		))
+	}
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }
