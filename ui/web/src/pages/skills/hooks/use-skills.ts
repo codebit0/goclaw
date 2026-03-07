@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useWs, useHttp } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { Methods } from "@/api/protocol";
 import { queryKeys } from "@/lib/query-keys";
 import type { SkillInfo } from "@/types/skill";
@@ -10,16 +11,17 @@ export type { SkillInfo };
 export function useSkills() {
   const ws = useWs();
   const http = useHttp();
+  const connected = useAuthStore((s) => s.connected);
   const queryClient = useQueryClient();
 
-  const { data: skills = [], isLoading: loading } = useQuery({
+  const { data: skills = [], isPending: loading } = useQuery({
     queryKey: queryKeys.skills.all,
     queryFn: async () => {
-      if (!ws.isConnected) return [];
       const res = await ws.call<{ skills: SkillInfo[] }>(Methods.SKILLS_LIST);
       return res.skills ?? [];
     },
     staleTime: 60_000,
+    enabled: connected,
   });
 
   const invalidate = useCallback(

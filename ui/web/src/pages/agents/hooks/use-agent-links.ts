@@ -1,15 +1,17 @@
 import { useState, useCallback } from "react";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { Methods } from "@/api/protocol";
 import type { AgentLinkData, AgentLinkSettings } from "@/types/agent";
 
 export function useAgentLinks(agentId: string) {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const [links, setLinks] = useState<AgentLinkData[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     setLoading(true);
     try {
       const res = await ws.call<{ links: AgentLinkData[]; count: number }>(
@@ -22,7 +24,7 @@ export function useAgentLinks(agentId: string) {
     } finally {
       setLoading(false);
     }
-  }, [ws, agentId]);
+  }, [ws, agentId, connected]);
 
   const createLink = useCallback(
     async (params: {

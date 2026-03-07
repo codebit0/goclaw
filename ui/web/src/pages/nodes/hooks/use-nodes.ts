@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { useWsEvent } from "@/hooks/use-ws-event";
 import { Methods, Events } from "@/api/protocol";
 
@@ -23,12 +24,13 @@ export interface PairedDevice {
 
 export function useNodes() {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const [pendingPairings, setPendingPairings] = useState<PendingPairing[]>([]);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     setLoading(true);
     try {
       const res = await ws.call<{
@@ -42,7 +44,7 @@ export function useNodes() {
     } finally {
       setLoading(false);
     }
-  }, [ws]);
+  }, [ws, connected]);
 
   useEffect(() => {
     load();

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { Methods } from "@/api/protocol";
 
 export interface ChannelStatus {
@@ -9,12 +10,13 @@ export interface ChannelStatus {
 
 export function useChannels() {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const [channels, setChannels] = useState<Record<string, ChannelStatus>>({});
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     setLoading(true);
     setError(null);
     try {
@@ -27,7 +29,7 @@ export function useChannels() {
     } finally {
       setLoading(false);
     }
-  }, [ws]);
+  }, [ws, connected]);
 
   useEffect(() => {
     load();

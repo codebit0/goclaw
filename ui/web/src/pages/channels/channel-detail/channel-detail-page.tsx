@@ -10,7 +10,7 @@ import { ChannelCredentialsTab } from "./channel-credentials-tab";
 import { ChannelConfigTab } from "./channel-config-tab";
 import { ChannelGroupsTab } from "./channel-groups-tab";
 import { ChannelWritersTab } from "./channel-writers-tab";
-import { DeferredSpinner } from "@/components/shared/loading-skeleton";
+import { DetailPageSkeleton } from "@/components/shared/loading-skeleton";
 import { channelTypeLabels } from "../channels-status-view";
 import { useChannels } from "../hooks/use-channels";
 
@@ -34,14 +34,7 @@ export function ChannelDetailPage({ instanceId, onBack }: ChannelDetailPageProps
   const [activeTab, setActiveTab] = useState("general");
 
   if (loading || !instance) {
-    return (
-      <div className="p-4 sm:p-6">
-        <Button variant="ghost" onClick={onBack} className="mb-4 gap-1">
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
-        <DeferredSpinner />
-      </div>
-    );
+    return <DetailPageSkeleton tabs={4} />;
   }
 
   const status = channels[instance.name] ?? null;

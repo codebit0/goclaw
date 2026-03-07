@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { Methods } from "@/api/protocol";
 import { queryKeys } from "@/lib/query-keys";
 import { toast } from "@/stores/use-toast-store";
@@ -49,17 +50,18 @@ export interface CronRunLogEntry {
 
 export function useCron() {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const queryClient = useQueryClient();
 
-  const { data: jobs = [], isLoading: loading } = useQuery({
+  const { data: jobs = [], isPending: loading } = useQuery({
     queryKey: queryKeys.cron.all,
     queryFn: async () => {
-      if (!ws.isConnected) return [];
       const res = await ws.call<{ jobs: CronJob[] }>(Methods.CRON_LIST, {
         includeDisabled: true,
       });
       return res.jobs ?? [];
     },
+    enabled: connected,
   });
 
   const invalidate = useCallback(

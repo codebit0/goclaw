@@ -1,15 +1,17 @@
 import { useState, useCallback } from "react";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { Methods } from "@/api/protocol";
 import type { TeamData, TeamMemberData, TeamTaskData, TeamAccessSettings } from "@/types/team";
 
 export function useTeams() {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const [teams, setTeams] = useState<TeamData[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     setLoading(true);
     try {
       const res = await ws.call<{ teams: TeamData[]; count: number }>(
@@ -21,7 +23,7 @@ export function useTeams() {
     } finally {
       setLoading(false);
     }
-  }, [ws]);
+  }, [ws, connected]);
 
   const createTeam = useCallback(
     async (params: {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWs } from "./use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { useWsEvent } from "./use-ws-event";
 import { Methods, Events } from "@/api/protocol";
 import { toast } from "@/stores/use-toast-store";
@@ -11,10 +12,11 @@ interface Options {
 
 export function usePendingPairingsCount({ showToast }: Options = {}) {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const [pendingCount, setPendingCount] = useState(0);
 
   const fetchCount = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     try {
       const res = await ws.call<{ pending: { code: string }[] }>(
         Methods.PAIRING_LIST,
@@ -23,7 +25,7 @@ export function usePendingPairingsCount({ showToast }: Options = {}) {
     } catch {
       // ignore
     }
-  }, [ws]);
+  }, [ws, connected]);
 
   useEffect(() => {
     fetchCount();

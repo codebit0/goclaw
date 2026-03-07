@@ -11,12 +11,13 @@ import { useAuthStore } from "@/stores/use-auth-store";
 export function useChatSessions(agentId: string) {
   const ws = useWs();
   const userId = useAuthStore((s) => s.userId);
+  const connected = useAuthStore((s) => s.connected);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     setLoading(true);
     setError(null);
     try {
@@ -34,7 +35,7 @@ export function useChatSessions(agentId: string) {
     } finally {
       setLoading(false);
     }
-  }, [ws, agentId]);
+  }, [ws, agentId, connected]);
 
   useEffect(() => {
     loadSessions();

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { useWsEvent } from "@/hooks/use-ws-event";
 import { Methods, Events } from "@/api/protocol";
 import { toast } from "@/stores/use-toast-store";
@@ -13,12 +14,13 @@ export interface PendingApproval {
 
 export function useApprovals() {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const [pending, setPending] = useState<PendingApproval[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!ws.isConnected) return;
+    if (!connected) return;
     setLoading(true);
     setError(null);
     try {
@@ -29,7 +31,7 @@ export function useApprovals() {
     } finally {
       setLoading(false);
     }
-  }, [ws]);
+  }, [ws, connected]);
 
   useEffect(() => {
     load();

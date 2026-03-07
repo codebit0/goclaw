@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useWs } from "@/hooks/use-ws";
+import { useAuthStore } from "@/stores/use-auth-store";
 import { Methods } from "@/api/protocol";
 import { queryKeys } from "@/lib/query-keys";
 import type { SessionInfo, SessionPreview, Message } from "@/types/session";
@@ -13,12 +14,13 @@ interface UseSessionsOptions {
 
 export function useSessions(opts: UseSessionsOptions = {}) {
   const ws = useWs();
+  const connected = useAuthStore((s) => s.connected);
   const queryClient = useQueryClient();
   const { agentFilter, limit, offset } = opts;
 
   const queryKey = queryKeys.sessions.list({ agentFilter, limit, offset });
 
-  const { data, isLoading: loading } = useQuery({
+  const { data, isPending: loading } = useQuery({
     queryKey,
     queryFn: async () => {
       if (!ws.isConnected) return { sessions: [] as SessionInfo[], total: 0 };
@@ -30,6 +32,7 @@ export function useSessions(opts: UseSessionsOptions = {}) {
       return { sessions: res.sessions ?? [], total: res.total ?? 0 };
     },
     placeholderData: (prev) => prev,
+    enabled: connected,
   });
 
   const sessions = data?.sessions ?? [];
