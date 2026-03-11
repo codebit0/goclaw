@@ -7,6 +7,7 @@ export interface ToolPolicyConfig {
   allow?: string[];
   deny?: string[];
   alsoAllow?: string[];
+  byProvider?: Record<string, { profile?: string; allow?: string[]; deny?: string[]; alsoAllow?: string[] }>;
 }
 
 export interface SubagentsConfig {
