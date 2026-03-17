@@ -837,9 +837,23 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			toolSpanID := l.emitToolSpanStart(ctx, toolSpanStart, tc.Name, tc.ID, string(argsJSON))
 			var result *tools.Result
 			if allowedTools != nil && !allowedTools[tc.Name] {
-				slog.Warn("security.tool_policy_blocked", "agent", l.id, "tool", tc.Name)
-				result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
-			} else {
+				// Attempt lazy activation: deferred MCP tools can be activated on first call
+				// so the LLM can call them by name directly without mcp_tool_search.
+				if l.tools.TryActivateDeferred(tc.Name) {
+					// Verify tool isn't explicitly denied by policy before allowing.
+					if l.toolPolicy != nil && l.toolPolicy.IsDenied(tc.Name, l.agentToolPolicy) {
+						slog.Warn("security.tool_policy_denied_lazy", "agent", l.id, "tool", tc.Name)
+						result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
+					} else {
+						allowedTools[tc.Name] = true
+						slog.Info("mcp.tool.lazy_activated", "agent", l.id, "tool", tc.Name)
+					}
+				} else {
+					slog.Warn("security.tool_policy_blocked", "agent", l.id, "tool", tc.Name)
+					result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
+				}
+			}
+			if result == nil {
 				result = l.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, req.Channel, req.ChatID, req.PeerKind, req.SessionKey, nil)
 			}
 
@@ -963,9 +977,23 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 					spanID := l.emitToolSpanStart(ctx, spanStart, tc.Name, tc.ID, string(argsJSON))
 					var result *tools.Result
 					if allowedTools != nil && !allowedTools[tc.Name] {
-						slog.Warn("security.tool_policy_blocked", "agent", l.id, "tool", tc.Name)
-						result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
-					} else {
+						// Attempt lazy activation for deferred MCP tools.
+						// Note: don't write back to allowedTools — concurrent goroutines share
+						// the map and writes would race. TryActivateDeferred is idempotent.
+						if l.tools.TryActivateDeferred(tc.Name) {
+							// Verify tool isn't explicitly denied by policy before allowing.
+							if l.toolPolicy != nil && l.toolPolicy.IsDenied(tc.Name, l.agentToolPolicy) {
+								slog.Warn("security.tool_policy_denied_lazy", "agent", l.id, "tool", tc.Name)
+								result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
+							} else {
+								slog.Info("mcp.tool.lazy_activated", "agent", l.id, "tool", tc.Name)
+							}
+						} else {
+							slog.Warn("security.tool_policy_blocked", "agent", l.id, "tool", tc.Name)
+							result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
+						}
+					}
+					if result == nil {
 						result = l.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, req.Channel, req.ChatID, req.PeerKind, req.SessionKey, nil)
 					}
 					l.emitToolSpanEnd(ctx, spanID, spanStart, result)
