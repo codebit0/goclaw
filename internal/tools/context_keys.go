@@ -368,6 +368,35 @@ func PendingTeamDispatchFromCtx(ctx context.Context) *PendingTeamDispatch {
 	return v
 }
 
+// --- Run media file paths (for team workspace auto-collect) ---
+
+const ctxRunMediaPaths toolContextKey = "tool_run_media_paths"
+
+// WithRunMediaPaths stores the absolute file paths of media files received
+// in the current run. Used by team_tasks to auto-copy files to team workspace.
+func WithRunMediaPaths(ctx context.Context, paths []string) context.Context {
+	return context.WithValue(ctx, ctxRunMediaPaths, paths)
+}
+
+// RunMediaPathsFromCtx returns media file paths from the current run.
+func RunMediaPathsFromCtx(ctx context.Context) []string {
+	v, _ := ctx.Value(ctxRunMediaPaths).([]string)
+	return v
+}
+
+const ctxRunMediaNames toolContextKey = "tool_run_media_names"
+
+// WithRunMediaNames stores the mapping from media file path to original filename.
+func WithRunMediaNames(ctx context.Context, names map[string]string) context.Context {
+	return context.WithValue(ctx, ctxRunMediaNames, names)
+}
+
+// RunMediaNamesFromCtx returns the media path → original filename mapping.
+func RunMediaNamesFromCtx(ctx context.Context) map[string]string {
+	v, _ := ctx.Value(ctxRunMediaNames).(map[string]string)
+	return v
+}
+
 // --- Per-agent sandbox config override ---
 
 const ctxSandboxCfg toolContextKey = "tool_sandbox_config"

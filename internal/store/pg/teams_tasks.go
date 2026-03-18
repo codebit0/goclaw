@@ -89,10 +89,11 @@ func (s *PGTeamStore) CreateTask(ctx context.Context, task *store.TeamTaskData) 
 		return fmt.Errorf("lock team: %w", err)
 	}
 
+	// Scope task_number per (team_id, chat_id) so each conversation starts from 1.
 	var taskNumber int
 	err = tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(task_number), 0) + 1 FROM team_tasks WHERE team_id = $1`,
-		task.TeamID,
+		`SELECT COALESCE(MAX(task_number), 0) + 1 FROM team_tasks WHERE team_id = $1 AND COALESCE(chat_id, '') = $2`,
+		task.TeamID, task.ChatID,
 	).Scan(&taskNumber)
 	if err != nil {
 		return fmt.Errorf("compute task_number: %w", err)
