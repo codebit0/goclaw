@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -212,8 +213,14 @@ func truncateForReminder(content string, maxLen int) string {
 	// Use last non-empty line as it's typically the most relevant.
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	msg := lines[len(lines)-1]
-	if len(msg) > maxLen {
-		msg = msg[:maxLen] + "..."
+	// Ensure we only persist valid UTF-8 into PostgreSQL.
+	msg = strings.ToValidUTF8(msg, "")
+	if maxLen <= 0 {
+		return msg
+	}
+	if utf8.RuneCountInString(msg) > maxLen {
+		r := []rune(msg)
+		msg = string(r[:maxLen]) + "..."
 	}
 	return msg
 }
