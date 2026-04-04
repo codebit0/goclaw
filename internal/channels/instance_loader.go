@@ -201,13 +201,13 @@ func (l *InstanceLoader) LoadedNames() map[string]struct{} {
 }
 
 // qualifiedChannelName creates a tenant-scoped key for the channel manager.
-// Uses first 8 chars of tenant UUID as prefix for brevity.
+// Uses full tenant UUID to guarantee uniqueness across tenants.
 // Returns name as-is for zero UUID (single-tenant / legacy).
 func qualifiedChannelName(tenantID uuid.UUID, name string) string {
 	if tenantID == uuid.Nil {
 		return name
 	}
-	return tenantID.String()[:8] + ":" + name
+	return tenantID.String() + ":" + name
 }
 
 // loadInstance creates and registers a single channel from a DB instance (caller must hold lock).
@@ -347,6 +347,6 @@ func (l *InstanceLoader) loadInstance(ctx context.Context, inst store.ChannelIns
 	}
 
 	slog.Info("channel instance loaded",
-		"name", qName, "type", inst.ChannelType, "agent_id", inst.AgentID)
+		"name", qName, "type", inst.ChannelType, "agent_id", inst.AgentID, "tenant_id", inst.TenantID)
 	return nil
 }

@@ -22,22 +22,22 @@ func TestQualifiedChannelName(t *testing.T) {
 			want:     "zalo-personal",
 		},
 		{
-			name:     "non-zero UUID prefixes with first 8 chars",
+			name:     "non-zero UUID prefixes with full UUID",
 			tenantID: fixedUUID,
 			chName:   "zalo-personal",
-			want:     "a1b2c3d4:zalo-personal",
+			want:     "a1b2c3d4-e5f6-7890-abcd-ef1234567890:zalo-personal",
 		},
 		{
 			name:     "different tenants with same channel name produce distinct keys",
 			tenantID: uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000000"),
 			chName:   "zalo-personal",
-			want:     "bbbbbbbb:zalo-personal",
+			want:     "bbbbbbbb-0000-0000-0000-000000000000:zalo-personal",
 		},
 		{
 			name:     "same tenant, different channel names produce distinct keys",
 			tenantID: fixedUUID,
 			chName:   "telegram-main",
-			want:     "a1b2c3d4:telegram-main",
+			want:     "a1b2c3d4-e5f6-7890-abcd-ef1234567890:telegram-main",
 		},
 	}
 
