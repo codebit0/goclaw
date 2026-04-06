@@ -64,15 +64,15 @@ var htmlToWaMdReplacers = []struct {
 }{
 	{regexp.MustCompile(`(?i)<br\s*/?>`), "\n"},
 	{regexp.MustCompile(`(?i)</?p\s*>`), "\n"},
-	{regexp.MustCompile(`(?i)<b>([\s\S]*?)</b>`), "**$1**"},
-	{regexp.MustCompile(`(?i)<strong>([\s\S]*?)</strong>`), "**$1**"},
-	{regexp.MustCompile(`(?i)<i>([\s\S]*?)</i>`), "_$1_"},
-	{regexp.MustCompile(`(?i)<em>([\s\S]*?)</em>`), "_$1_"},
-	{regexp.MustCompile(`(?i)<s>([\s\S]*?)</s>`), "~~$1~~"},
-	{regexp.MustCompile(`(?i)<strike>([\s\S]*?)</strike>`), "~~$1~~"},
-	{regexp.MustCompile(`(?i)<del>([\s\S]*?)</del>`), "~~$1~~"},
-	{regexp.MustCompile(`(?i)<code>([\s\S]*?)</code>`), "`$1`"},
-	{regexp.MustCompile(`(?i)<a\s+href="([^"]+)"[^>]*>([\s\S]*?)</a>`), "[$2]($1)"},
+	{regexp.MustCompile(`(?i)<b>([\s\S]*?)</b>`), "**${1}**"},
+	{regexp.MustCompile(`(?i)<strong>([\s\S]*?)</strong>`), "**${1}**"},
+	{regexp.MustCompile(`(?i)<i>([\s\S]*?)</i>`), "_${1}_"},
+	{regexp.MustCompile(`(?i)<em>([\s\S]*?)</em>`), "_${1}_"},
+	{regexp.MustCompile(`(?i)<s>([\s\S]*?)</s>`), "~~${1}~~"},
+	{regexp.MustCompile(`(?i)<strike>([\s\S]*?)</strike>`), "~~${1}~~"},
+	{regexp.MustCompile(`(?i)<del>([\s\S]*?)</del>`), "~~${1}~~"},
+	{regexp.MustCompile(`(?i)<code>([\s\S]*?)</code>`), "`${1}`"},
+	{regexp.MustCompile(`(?i)<a\s+href="([^"]+)"[^>]*>([\s\S]*?)</a>`), "[${2}](${1})"},
 }
 
 func htmlTagToWaMd(text string) string {

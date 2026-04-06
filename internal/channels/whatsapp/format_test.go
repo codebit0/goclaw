@@ -32,10 +32,7 @@ func TestMarkdownToWhatsApp(t *testing.T) {
 		},
 		{"collapse blank lines", "a\n\n\n\nb", "a\n\nb"},
 		{"html bold", "<b>bold</b>", "*bold*"},
-		// <em> → _text_ — WhatsApp uses _text_ for italic natively, passes through.
-		// Note: single-word italic _italic_ gets consumed by the Markdown pipeline
-		// because _italic_ is ambiguous. Use multi-word: <em>italic text</em>.
-		{"html italic multi-word", "<em>italic text</em>", "_italic text_"},
+		{"html italic", "<em>italic</em>", "_italic_"},
 		{"html strikethrough", "<del>removed</del>", "~removed~"},
 		{"html br", "line1<br>line2", "line1\nline2"},
 		{"html link", `<a href="https://x.com">link</a>`, "link https://x.com"},
