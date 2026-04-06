@@ -15,7 +15,7 @@ func TestMarkdownToWhatsApp(t *testing.T) {
 		{"bold stars", "this is **bold** text", "this is *bold* text"},
 		{"bold underscores", "this is __bold__ text", "this is *bold* text"},
 		{"strikethrough", "~~deleted~~", "~deleted~"},
-		{"inline code", "use `fmt.Println`", "use ```fmt.Println```"},
+		{"inline code", "use `fmt.Println`", "use `fmt.Println`"},
 		{"link", "[Go](https://go.dev)", "Go https://go.dev"},
 		{"unordered list dash", "- item one\n- item two", "• item one\n• item two"},
 		{"unordered list star", "* item one\n* item two", "• item one\n• item two"},

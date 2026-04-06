@@ -23,13 +23,17 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/channels/media"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
-	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
 const (
 	pairingDebounceTime = 60 * time.Second
 	maxMessageLen       = 4096 // WhatsApp practical message length limit
 )
+
+func init() {
+	// Set device name shown in WhatsApp's "Linked Devices" screen (once at package init).
+	wastore.DeviceProps.Os = proto.String("GoClaw")
+}
 
 // Channel connects directly to WhatsApp via go.mau.fi/whatsmeow.
 // Auth state is stored in PostgreSQL (standard) or SQLite (desktop).
@@ -94,9 +98,6 @@ func New(cfg config.WhatsAppConfig, msgBus *bus.MessageBus,
 
 	base := channels.NewBaseChannel(channels.TypeWhatsApp, msgBus, cfg.AllowFrom)
 	base.ValidatePolicy(cfg.DMPolicy, cfg.GroupPolicy)
-
-	// Set device name shown in WhatsApp's "Linked Devices" screen.
-	wastore.DeviceProps.Os = proto.String("GoClaw")
 
 	dialect := detectDialect(db)
 	container := sqlstore.NewWithDB(db, dialect, nil)
@@ -201,17 +202,6 @@ func (c *Channel) handleConnected() {
 	c.lastQRMu.Unlock()
 
 	c.MarkHealthy("WhatsApp authenticated and connected")
-
-	if mb := c.Bus(); mb != nil {
-		mb.Broadcast(bus.Event{
-			Name:     protocol.EventWhatsAppQRDone,
-			TenantID: c.TenantID(),
-			Payload: map[string]any{
-				"channel_name": c.Name(),
-				"success":      true,
-			},
-		})
-	}
 }
 
 // handleDisconnected processes the Disconnected event.

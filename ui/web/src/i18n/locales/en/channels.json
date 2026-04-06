@@ -470,7 +470,7 @@
   },
   "whatsapp": {
     "loginSuccessLoading": "✅ WhatsApp connected! Loading channel...",
-    "waitingForQr": "Waiting for QR code from bridge...",
+    "waitingForQr": "Waiting for QR code...",
     "scanHint": "Open WhatsApp → tap You → Linked Devices → Link a Device",
     "initializing": "Initializing...",
     "skip": "Skip",

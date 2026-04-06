@@ -385,7 +385,7 @@
   },
   "whatsapp": {
     "loginSuccessLoading": "✅ WhatsApp 已连接！正在加载 channel...",
-    "waitingForQr": "正在等待来自 bridge 的二维码...",
+    "waitingForQr": "正在等待二维码...",
     "scanHint": "打开 WhatsApp → 点击【您】→【已连接的设备】→【连接设备】",
     "initializing": "初始化中...",
     "skip": "跳过",

@@ -385,7 +385,7 @@
   },
   "whatsapp": {
     "loginSuccessLoading": "✅ Đã kết nối WhatsApp! Đang tải channel...",
-    "waitingForQr": "Đang chờ mã QR từ bridge...",
+    "waitingForQr": "Đang chờ mã QR...",
     "scanHint": "Mở WhatsApp → nhấn Bạn → Thiết bị đã liên kết → Liên kết thiết bị",
     "initializing": "Đang khởi tạo...",
     "skip": "Bỏ qua",
