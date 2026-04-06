@@ -26,7 +26,10 @@ import (
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
-const pairingDebounceTime = 60 * time.Second
+const (
+	pairingDebounceTime = 60 * time.Second
+	maxMessageLen       = 4096 // WhatsApp practical message length limit
+)
 
 // Channel connects directly to WhatsApp via go.mau.fi/whatsmeow.
 // Auth state is stored in PostgreSQL (standard) or SQLite (desktop).
@@ -293,6 +296,10 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 	}
 
 	// Group history + mention detection.
+	historyLimit := c.config.HistoryLimit
+	if historyLimit == 0 {
+		historyLimit = channels.DefaultGroupHistoryLimit
+	}
 	if peerKind == "group" && c.config.RequireMention != nil && *c.config.RequireMention {
 		if !c.isMentioned(evt) {
 			// Not mentioned — record for context and skip.
@@ -306,11 +313,11 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 				Body:      content,
 				Timestamp: evt.Info.Timestamp,
 				MessageID: string(evt.Info.ID),
-			}, channels.DefaultGroupHistoryLimit)
+			}, historyLimit)
 			return
 		}
 		// Mentioned — prepend accumulated group context.
-		content = c.groupHistory.BuildContext(chatID, content, channels.DefaultGroupHistoryLimit)
+		content = c.groupHistory.BuildContext(chatID, content, historyLimit)
 		c.groupHistory.Clear(chatID)
 	}
 
@@ -598,13 +605,17 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 		}
 	}
 
-	// Send text.
+	// Send text (chunked if exceeding limit).
 	if msg.Content != "" {
-		waMsg := &waE2E.Message{
-			Conversation: proto.String(markdownToWhatsApp(msg.Content)),
-		}
-		if _, err := c.client.SendMessage(c.ctx, chatJID, waMsg); err != nil {
-			return fmt.Errorf("send whatsapp message: %w", err)
+		formatted := markdownToWhatsApp(msg.Content)
+		chunks := chunkText(formatted, maxMessageLen)
+		for _, chunk := range chunks {
+			waMsg := &waE2E.Message{
+				Conversation: proto.String(chunk),
+			}
+			if _, err := c.client.SendMessage(c.ctx, chatJID, waMsg); err != nil {
+				return fmt.Errorf("send whatsapp message: %w", err)
+			}
 		}
 	}
 

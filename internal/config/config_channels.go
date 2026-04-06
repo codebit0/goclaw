@@ -133,11 +133,12 @@ type SlackConfig struct {
 
 type WhatsAppConfig struct {
 	Enabled        bool                `json:"enabled"`
-	AuthDir        string              `json:"auth_dir,omitempty"` // optional: SQLite auth dir override (desktop)
+	AuthDir        string              `json:"auth_dir,omitempty"`        // optional: SQLite auth dir override (desktop)
 	AllowFrom      FlexibleStringSlice `json:"allow_from"`
 	DMPolicy       string              `json:"dm_policy,omitempty"`       // "pairing" (default for DB instances), "open", "allowlist", "disabled"
 	GroupPolicy    string              `json:"group_policy,omitempty"`    // "pairing" (default for DB instances), "open" (default for config), "allowlist", "disabled"
 	RequireMention *bool               `json:"require_mention,omitempty"` // only respond in groups when bot is @mentioned (default false)
+	HistoryLimit   int                 `json:"history_limit,omitempty"`   // max pending group messages for context (default 200, 0=disabled)
 	BlockReply     *bool               `json:"block_reply,omitempty"`     // override gateway block_reply (nil = inherit)
 }
 

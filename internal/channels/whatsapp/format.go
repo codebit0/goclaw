@@ -107,3 +107,31 @@ func waExtractCodeBlocks(text string) waCodeBlockMatch {
 
 	return waCodeBlockMatch{text: text, codes: codes}
 }
+
+// chunkText splits text into pieces that fit within maxLen,
+// preferring to split at paragraph (\n\n) or line (\n) boundaries.
+func chunkText(text string, maxLen int) []string {
+	if len(text) <= maxLen {
+		return []string{text}
+	}
+
+	var chunks []string
+	for len(text) > 0 {
+		if len(text) <= maxLen {
+			chunks = append(chunks, text)
+			break
+		}
+		// Find the best split point: paragraph > line > space > hard cut.
+		cutAt := maxLen
+		if idx := strings.LastIndex(text[:maxLen], "\n\n"); idx > 0 {
+			cutAt = idx
+		} else if idx := strings.LastIndex(text[:maxLen], "\n"); idx > 0 {
+			cutAt = idx
+		} else if idx := strings.LastIndex(text[:maxLen], " "); idx > 0 {
+			cutAt = idx
+		}
+		chunks = append(chunks, strings.TrimRight(text[:cutAt], " \n"))
+		text = strings.TrimLeft(text[cutAt:], " \n")
+	}
+	return chunks
+}
