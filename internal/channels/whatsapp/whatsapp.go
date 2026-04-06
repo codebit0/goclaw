@@ -59,6 +59,9 @@ type Channel struct {
 
 	// typingCancel tracks active typing-refresh loops per chatID.
 	typingCancel sync.Map // chatID string → context.CancelFunc
+
+	// reauthMu serializes Reauth() and StartQRFlow() to prevent race when user clicks reauth rapidly.
+	reauthMu sync.Mutex
 }
 
 // GetLastQRB64 returns the most recent QR PNG (base64).
@@ -375,6 +378,13 @@ func (c *Channel) handleIncomingMessage(evt *events.Message) {
 		TenantID: c.TenantID(),
 		Metadata: metadata,
 	})
+
+	// Schedule temp media file cleanup after agent pipeline has had time to process.
+	var tmpPaths []string
+	for _, mf := range mediaFiles {
+		tmpPaths = append(tmpPaths, mf.Path)
+	}
+	scheduleMediaCleanup(tmpPaths, 5*time.Minute)
 }
 
 // extractTextContent extracts text from any WhatsApp message variant.
@@ -502,7 +512,8 @@ func (c *Channel) downloadMedia(evt *events.Message) []media.MediaInfo {
 	for _, item := range items {
 		data, err := c.client.Download(c.ctx, item.download)
 		if err != nil {
-			slog.Warn("whatsapp: media download failed", "type", item.mediaType, "error", err)
+			reason := classifyDownloadError(err)
+			slog.Warn("whatsapp: media download failed", "type", item.mediaType, "reason", reason, "error", err)
 			continue
 		}
 		if len(data) > 20*1024*1024 { // 20MB limit
@@ -554,6 +565,38 @@ func mimeToExt(mime string) string {
 	default:
 		return ".bin"
 	}
+}
+
+// classifyDownloadError returns a human-readable reason for a media download failure.
+func classifyDownloadError(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline"):
+		return "timeout"
+	case strings.Contains(msg, "decrypt") || strings.Contains(msg, "cipher"):
+		return "decrypt_error"
+	case strings.Contains(msg, "404") || strings.Contains(msg, "not found"):
+		return "expired"
+	case strings.Contains(msg, "unsupported"):
+		return "unsupported"
+	default:
+		return "unknown"
+	}
+}
+
+// scheduleMediaCleanup removes temp media files after a delay.
+func scheduleMediaCleanup(paths []string, delay time.Duration) {
+	if len(paths) == 0 {
+		return
+	}
+	go func() {
+		time.Sleep(delay)
+		for _, p := range paths {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				slog.Debug("whatsapp: temp media cleanup failed", "path", p, "error", err)
+			}
+		}
+	}()
 }
 
 // Send delivers an outbound message to WhatsApp via whatsmeow.
@@ -723,7 +766,10 @@ func (c *Channel) sendPresence(to types.JID, state types.ChatPresence) {
 // Returns a channel that emits QR code strings and auth events.
 // Lazily initializes the whatsmeow client if Start() hasn't been called yet
 // (handles timing race between async instance reload and wizard auto-start).
+// Serialized with Reauth via reauthMu to prevent races on rapid double-clicks.
 func (c *Channel) StartQRFlow(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
+	c.reauthMu.Lock()
+	defer c.reauthMu.Unlock()
 	if c.client == nil {
 		// Lazy init: wizard may request QR before Start() is called.
 		c.mu.Lock()
@@ -761,7 +807,11 @@ func (c *Channel) StartQRFlow(ctx context.Context) (<-chan whatsmeow.QRChannelIt
 }
 
 // Reauth clears the current session and prepares for a fresh QR scan.
+// Serialized with StartQRFlow via reauthMu to prevent races on rapid double-clicks.
 func (c *Channel) Reauth() error {
+	c.reauthMu.Lock()
+	defer c.reauthMu.Unlock()
+
 	slog.Info("whatsapp: reauth requested", "channel", c.Name())
 
 	c.lastQRMu.Lock()
