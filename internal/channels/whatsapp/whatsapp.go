@@ -42,7 +42,8 @@ type Channel struct {
 	lastQRMu        sync.RWMutex
 	lastQRB64       string // base64-encoded PNG, empty when bridge is already authenticated
 	waAuthenticated bool   // true once bridge reports WhatsApp account is connected
-	myJID           string // bot's own WhatsApp JID (set from bridge status, used for mention detection)
+	myJID           string // bot's phone JID (e.g. "1234567890@s.whatsapp.net"), for mention detection
+	myLID           string // bot's Link ID (e.g. "9876543210@lid"), WhatsApp's newer identifier
 
 	// typingCancel tracks active typing-refresh loops per chatID.
 	// WhatsApp clears "composing" after ~10s, so we refresh every 8s until the reply is sent.
@@ -394,10 +395,16 @@ func (c *Channel) handleBridgeStatus(msg map[string]any) {
 	c.waAuthenticated = connected
 	if connected {
 		c.lastQRB64 = "" // clear QR — no longer needed
-		// Capture bot's own JID for group mention detection.
+		// Capture bot's own JID + LID for group mention detection.
+		// WhatsApp uses two identifier systems: phone JID and LID (Link ID).
+		// Mentions in groups may use either format.
 		if me, ok := msg["me"].(string); ok && me != "" {
-			c.myJID = me
-			slog.Info("whatsapp: bot JID set", "jid", me, "channel", c.Name())
+			c.myJID = normalizeJID(me)
+			slog.Info("whatsapp: bot JID set", "jid", c.myJID, "channel", c.Name())
+		}
+		if meLID, ok := msg["me_lid"].(string); ok && meLID != "" {
+			c.myLID = normalizeJID(meLID)
+			slog.Info("whatsapp: bot LID set", "lid", c.myLID, "channel", c.Name())
 		}
 	}
 	c.lastQRMu.Unlock()
@@ -501,17 +508,27 @@ func (c *Channel) handleIncomingMessage(msg map[string]any) {
 		metadata["user_name"] = userName
 	}
 
-	// require_mention: in groups, only process when the bot's JID is @mentioned.
-	// Fails closed: if bot JID is unknown, treat as not-mentioned (don't respond).
+	// require_mention: in groups, only process when the bot is @mentioned.
+	// WhatsApp uses two identifier systems: phone JID (@s.whatsapp.net) and LID (@lid).
+	// Mentions may use either format, so we check both.
+	// Fails closed: if both JID and LID are unknown, treat as not-mentioned.
 	if peerKind == "group" && c.config.RequireMention != nil && *c.config.RequireMention {
 		c.lastQRMu.RLock()
 		myJID := c.myJID
+		myLID := c.myLID
 		c.lastQRMu.RUnlock()
 		mentioned := false
-		if myJID != "" {
+		if myJID != "" || myLID != "" {
+			myJIDNorm := normalizeJID(myJID)
+			myLIDNorm := normalizeJID(myLID)
 			if jids, ok := msg["mentioned_jids"].([]any); ok {
 				for _, j := range jids {
-					if jid, ok := j.(string); ok && jid == myJID {
+					jid, ok := j.(string)
+					if !ok {
+						continue
+					}
+					norm := normalizeJID(jid)
+					if (myJIDNorm != "" && norm == myJIDNorm) || (myLIDNorm != "" && norm == myLIDNorm) {
 						mentioned = true
 						break
 					}
@@ -519,7 +536,7 @@ func (c *Channel) handleIncomingMessage(msg map[string]any) {
 			}
 		}
 		if !mentioned {
-			slog.Debug("whatsapp group message skipped — bot not @mentioned", "sender_id", senderID, "my_jid", myJID)
+			slog.Info("whatsapp group message skipped — bot not @mentioned", "sender_id", senderID, "my_jid", myJID, "my_lid", myLID)
 			return
 		}
 	}
@@ -722,4 +739,15 @@ func (c *Channel) sendPairingReply(ctx context.Context, senderID, chatID string)
 		c.pairingDebounce.Store(senderID, time.Now())
 		slog.Info("whatsapp pairing reply sent", "sender_id", senderID, "code", code)
 	}
+}
+
+// normalizeJID strips the Baileys device suffix from a WhatsApp JID.
+// e.g. "12345678901:42@s.whatsapp.net" → "12345678901@s.whatsapp.net"
+func normalizeJID(jid string) string {
+	colonIdx := strings.Index(jid, ":")
+	atIdx := strings.Index(jid, "@")
+	if colonIdx > 0 && atIdx > colonIdx {
+		return jid[:colonIdx] + jid[atIdx:]
+	}
+	return jid
 }

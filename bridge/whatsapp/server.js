@@ -62,6 +62,8 @@ let reconnectTimer = null
 let waConnected    = false  // true once Baileys reports 'open' for this session
 let isReauthing    = false  // prevents 401 from stopping reconnect during reauth
 let lastQR         = null   // cached QR string — replayed to clients that reconnect mid-flow
+let botJID         = ''     // cached bare bot JID (phone) — replayed to clients that connect after auth
+let botLID         = ''     // cached bare bot LID (Link ID) — WhatsApp's newer identifier system
 
 // --- Helpers ---
 
@@ -216,8 +218,15 @@ async function connectToWhatsApp() {
       console.log('✅ WhatsApp authenticated!')
       lastQR = null  // clear cached QR — no longer needed
       waConnected = true
-      // Include the bot's own JID so GoClaw can detect @mentions.
-      broadcast({ type: 'status', connected: true, me: sock.user?.id ?? '' })
+      // Include the bot's own JIDs so GoClaw can detect @mentions.
+      // WhatsApp uses two identifier systems: phone JID (@s.whatsapp.net) and LID (@lid).
+      // Mentions in groups may use either format, so we send both.
+      // Strip Baileys device suffix (e.g. "12345:42@s.whatsapp.net" → "12345@s.whatsapp.net")
+      const rawJid = sock.user?.id ?? ''
+      botJID = rawJid.replace(/:\d+@/, '@')
+      const rawLid = sock.user?.lid ?? ''
+      botLID = rawLid.replace(/:\d+@/, '@')
+      broadcast({ type: 'status', connected: true, me: botJID, me_lid: botLID })
     }
   })
 
@@ -276,6 +285,8 @@ async function handleReauth() {
   console.log('🔄 Reauth requested — clearing session and restarting...')
   isReauthing = true
   waConnected = false
+  botJID = ''
+  botLID = ''
   broadcast({ type: 'status', connected: false })
 
   if (reconnectTimer) {
@@ -310,7 +321,8 @@ wss.on('connection', ws => {
   clients.add(ws)
 
   // Send current auth state immediately so GoClaw doesn't have to guess.
-  sendTo(ws, { type: 'status', connected: waConnected })
+  // Include bot JID + LID so mention detection works even if GoClaw connects after auth.
+  sendTo(ws, { type: 'status', connected: waConnected, ...(botJID && { me: botJID }), ...(botLID && { me_lid: botLID }) })
   // Replay cached QR so GoClaw doesn't miss it if it reconnected mid-flow.
   if (lastQR && !waConnected) {
     sendTo(ws, { type: 'qr', data: lastQR })
