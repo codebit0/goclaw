@@ -29,10 +29,13 @@ services:
       - "${WHATSAPP_BRIDGE_PORT:-3001}:3001"
     volumes:
       - whatsapp-auth:/app/auth_info
+      - goclaw-workspace:/app/workspace    # shared: bridge reads outbound media from GoClaw workspace
+      - whatsapp-media:/app/media          # shared: bridge writes inbound media, GoClaw reads
     environment:
       - BRIDGE_PORT=3001
       - AUTH_DIR=/app/auth_info
       - LOG_LEVEL=${WHATSAPP_LOG_LEVEL:-silent}
+      - MEDIA_DIR=/app/media               # inbound downloads go here (shared with GoClaw)
     networks:
       - goclaw-net
     restart: unless-stopped
@@ -41,6 +44,9 @@ services:
   goclaw:
     depends_on:
       - whatsapp-bridge
+    volumes:
+      - whatsapp-media:/app/media          # shared: GoClaw reads inbound media from bridge
 
 volumes:
   whatsapp-auth:
+  whatsapp-media:
