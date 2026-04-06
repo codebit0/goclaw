@@ -132,12 +132,13 @@ type SlackConfig struct {
 }
 
 type WhatsAppConfig struct {
-	Enabled     bool                `json:"enabled"`
-	BridgeURL   string              `json:"bridge_url"`
-	AllowFrom   FlexibleStringSlice `json:"allow_from"`
-	DMPolicy    string              `json:"dm_policy,omitempty"`    // "open" (default), "allowlist", "disabled"
-	GroupPolicy string              `json:"group_policy,omitempty"` // "open" (default), "allowlist", "disabled"
-	BlockReply  *bool               `json:"block_reply,omitempty"`  // override gateway block_reply (nil = inherit)
+	Enabled        bool                `json:"enabled"`
+	BridgeURL      string              `json:"bridge_url"`
+	AllowFrom      FlexibleStringSlice `json:"allow_from"`
+	DMPolicy       string              `json:"dm_policy,omitempty"`       // "pairing" (default for DB instances), "open", "allowlist", "disabled"
+	GroupPolicy    string              `json:"group_policy,omitempty"`    // "pairing" (default for DB instances), "open" (default for config), "allowlist", "disabled"
+	RequireMention *bool               `json:"require_mention,omitempty"` // only respond in groups when bot is @mentioned (default false)
+	BlockReply     *bool               `json:"block_reply,omitempty"`     // override gateway block_reply (nil = inherit)
 }
 
 type ZaloConfig struct {
