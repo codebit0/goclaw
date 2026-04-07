@@ -108,6 +108,12 @@ func processNormalMessage(
 		}
 	}
 
+	// Set session label for Pancake channels: "Pancake:{SenderName}:{PageName}"
+	if msg.Metadata["pancake_mode"] != "" {
+		label := buildPancakeSessionLabel(msg.Metadata["display_name"], msg.Metadata["page_name"])
+		deps.SessStore.SetLabel(ctx, sessionKey, label)
+	}
+
 	// Auto-collect channel contacts for the contact selector.
 	// Skip internal senders (system:*, notification:*, teammate:*, ticker:*, session_send_tool).
 	if deps.ContactCollector != nil && msg.SenderID != "" && !bus.IsInternalSender(msg.SenderID) {

@@ -182,9 +182,11 @@ All notable changes to GoClaw Gateway are documented here. Format follows [Keep 
 - **File viewer**: Improved workspace file view/download and storage depth control
 - **Pairing DB errors**: Handle transient errors gracefully
 - **Provider thinking**: Corrected DashScope per-model thinking logic
+- **Pancake Page loop guard**: Narrowed webhook ingress to `messaging` + `INBOX` events and normalized HTML-formatted echoes before short-TTL outbound echo suppression, reducing Facebook Page self-reply loops in Pancake inbox conversations
 
 ### Documentation
 
+- Updated `05-channels-messaging.md` — Refreshed `WebhookChannel` / `BlockReplyChannel` implementation tables for Facebook, Pancake, Discord, and Zalo-family channels
 - Updated `18-http-api.md` — Added section 17 for Runtime & Packages Management endpoints
 - Updated `09-security.md` — Added Docker entrypoint documentation, pkg-helper architecture, privilege separation
 - Updated `17-changelog.md` — New entries for packages management, Docker security, and auth fix

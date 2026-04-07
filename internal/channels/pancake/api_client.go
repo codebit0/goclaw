@@ -15,24 +15,26 @@ import (
 
 const (
 	publicAPIBase = "https://pages.fm/api/public_api/v2" // page-level APIs
-	userAPIBase   = "https://pages.fm/api/v1"             // user-level APIs (list pages, etc.)
+	userAPIBase   = "https://pages.fm/api/v1"            // user-level APIs (list pages, etc.)
 	httpTimeout   = 30 * time.Second
 )
 
 // APIClient wraps the Pancake REST API for a single page instance.
 type APIClient struct {
-	publicBaseURL string
-	userBaseURL   string
+	pageV1BaseURL   string
+	pageV2BaseURL   string
+	userBaseURL     string
 	pageAccessToken string
-	apiKey        string
-	pageID        string
-	httpClient    *http.Client
+	apiKey          string
+	pageID          string
+	httpClient      *http.Client
 }
 
 // NewAPIClient creates a new Pancake APIClient for the given page.
 func NewAPIClient(apiKey, pageAccessToken, pageID string) *APIClient {
 	return &APIClient{
-		publicBaseURL:   publicAPIBase,
+		pageV1BaseURL:   "https://pages.fm/api/public_api/v1",
+		pageV2BaseURL:   publicAPIBase,
 		userBaseURL:     userAPIBase,
 		pageAccessToken: pageAccessToken,
 		apiKey:          apiKey,
@@ -43,7 +45,7 @@ func NewAPIClient(apiKey, pageAccessToken, pageID string) *APIClient {
 
 // VerifyToken validates the page_access_token via a lightweight API call.
 func (c *APIClient) VerifyToken(ctx context.Context) error {
-	url := fmt.Sprintf("%s/pages/%s/conversations?limit=1", c.publicBaseURL, c.pageID)
+	url := fmt.Sprintf("%s/pages/%s/conversations?limit=1", c.pageV2BaseURL, c.pageID)
 	if err := c.doRequest(ctx, http.MethodGet, url, nil); err != nil {
 		return fmt.Errorf("pancake: token verification failed: %w", err)
 	}
@@ -92,20 +94,26 @@ func (c *APIClient) GetPage(ctx context.Context) (*PageInfo, error) {
 
 // SendMessage sends a text message to a conversation.
 func (c *APIClient) SendMessage(ctx context.Context, conversationID, content string) error {
-	body, _ := json.Marshal(SendMessageRequest{Content: content})
-	url := fmt.Sprintf("%s/pages/%s/conversations/%s/messages", c.publicBaseURL, c.pageID, conversationID)
+	body, _ := json.Marshal(SendMessageRequest{
+		Action:  "reply_inbox",
+		Message: content,
+	})
+	url := fmt.Sprintf("%s/pages/%s/conversations/%s/messages", c.pageV1BaseURL, c.pageID, conversationID)
 	if err := c.doRequest(ctx, http.MethodPost, url, bytes.NewReader(body)); err != nil {
 		return fmt.Errorf("pancake: send message: %w", err)
 	}
 	return nil
 }
 
-// SendMessageWithAttachment sends a message with a media attachment.
-func (c *APIClient) SendMessageWithAttachment(ctx context.Context, conversationID, content, attachmentID string) error {
-	body, _ := json.Marshal(SendMessageRequest{Content: content, AttachmentID: attachmentID})
-	url := fmt.Sprintf("%s/pages/%s/conversations/%s/messages", c.publicBaseURL, c.pageID, conversationID)
+// SendAttachmentMessage sends one or more uploaded content IDs to a conversation.
+func (c *APIClient) SendAttachmentMessage(ctx context.Context, conversationID string, contentIDs []string) error {
+	body, _ := json.Marshal(SendMessageRequest{
+		Action:     "reply_inbox",
+		ContentIDs: contentIDs,
+	})
+	url := fmt.Sprintf("%s/pages/%s/conversations/%s/messages", c.pageV1BaseURL, c.pageID, conversationID)
 	if err := c.doRequest(ctx, http.MethodPost, url, bytes.NewReader(body)); err != nil {
-		return fmt.Errorf("pancake: send message with attachment: %w", err)
+		return fmt.Errorf("pancake: send attachment message: %w", err)
 	}
 	return nil
 }
@@ -124,12 +132,11 @@ func (c *APIClient) UploadMedia(ctx context.Context, filename string, data io.Re
 	}
 	mw.Close()
 
-	url := fmt.Sprintf("%s/pages/%s/upload_contents", c.publicBaseURL, c.pageID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
+	url := fmt.Sprintf("%s/pages/%s/upload_contents", c.pageV1BaseURL, c.pageID)
+	req, err := c.newPageRequest(ctx, http.MethodPost, url, &buf)
 	if err != nil {
 		return "", fmt.Errorf("pancake: build upload request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.pageAccessToken)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 
 	res, err := c.httpClient.Do(req)
@@ -158,11 +165,10 @@ func (c *APIClient) UploadMedia(ctx context.Context, filename string, data io.Re
 // doRequest executes an authenticated HTTP request using the page_access_token.
 // Always drains and closes the response body to enable connection reuse.
 func (c *APIClient) doRequest(ctx context.Context, method, url string, body io.Reader) error {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	req, err := c.newPageRequest(ctx, method, url, body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.pageAccessToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	res, err := c.httpClient.Do(req)
@@ -182,7 +188,35 @@ func (c *APIClient) doRequest(ctx context.Context, method, url string, body io.R
 		return fmt.Errorf("pancake: HTTP %d", res.StatusCode)
 	}
 
+	// Some Pancake endpoints return HTTP 200 with a JSON body carrying success=false.
+	// Treat these as application-level send failures instead of silent success.
+	var appResp struct {
+		Success *bool  `json:"success,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+	if err := json.Unmarshal(respBody, &appResp); err == nil && appResp.Success != nil && !*appResp.Success {
+		if appResp.Message != "" {
+			return fmt.Errorf("pancake: %s", appResp.Message)
+		}
+		return fmt.Errorf("pancake: request reported success=false")
+	}
+
 	return nil
+}
+
+func (c *APIClient) newPageRequest(ctx context.Context, method, rawURL string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
+	if err != nil {
+		return nil, err
+	}
+
+	query := req.URL.Query()
+	query.Set("page_access_token", c.pageAccessToken)
+	req.URL.RawQuery = query.Encode()
+
+	// Keep the header for compatibility; official docs require the query token.
+	req.Header.Set("Authorization", "Bearer "+c.pageAccessToken)
+	return req, nil
 }
 
 // isAuthError checks if an error is an authentication/authorization failure.

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -74,6 +75,11 @@ func (r *webhookRouter) webhookRoute() (string, http.Handler) {
 // ServeHTTP is the shared handler for all Pancake page webhooks.
 // Always returns HTTP 200 — Pancake suspends webhooks if >80% errors in a 30-min window.
 func (r *webhookRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	slog.Info("pancake: webhook request received",
+		"method", req.Method,
+		"remote_addr", req.RemoteAddr,
+		"content_length", req.ContentLength)
+
 	if req.Method != http.MethodPost {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -87,32 +93,88 @@ func (r *webhookRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	slog.Info("pancake: webhook body received",
+		"body_len", len(body),
+		"body_preview", truncateBody(body, 1000))
+
+	// Parse top-level envelope.
 	var event WebhookEvent
 	if err := json.Unmarshal(body, &event); err != nil {
-		slog.Warn("pancake: router parse event error", "err", err)
+		slog.Warn("pancake: router parse event error", "err", err, "body_preview", truncateBody(body, 300))
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	if event.Event != "messaging" {
-		slog.Debug("pancake: router skipping non-messaging event", "event", event.Event)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	var data MessagingData
+	// Parse the nested "data" object containing conversation + message.
+	var data WebhookData
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		slog.Warn("pancake: router parse messaging data error", "err", err)
+		slog.Warn("pancake: router parse data error", "err", err)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Resolve page_id: try top-level first, then data-level, then extract from conversation ID.
+	pageID := event.PageID
+	if pageID == "" {
+		pageID = data.PageID
+	}
+	if pageID == "" {
+		// Conversation ID format: "pageID_senderID" — extract page portion.
+		if idx := strings.Index(data.Conversation.ID, "_"); idx > 0 {
+			pageID = data.Conversation.ID[:idx]
+		}
+	}
+
+	// Resolve conversation type — only process INBOX messages.
+	convType := strings.ToUpper(data.Conversation.Type)
+
+	if event.EventType != "" && !strings.EqualFold(event.EventType, "messaging") {
+		slog.Info("pancake: skipping non-messaging webhook event",
+			"event_type", event.EventType,
+			"page_id", pageID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	slog.Info("pancake: webhook event parsed",
+		"event_type", event.EventType,
+		"page_id", pageID,
+		"conv_id", data.Conversation.ID,
+		"conv_type", convType,
+		"sender_id", data.Conversation.From.ID,
+		"sender_name", data.Conversation.From.Name,
+		"msg_id", data.Message.ID)
+
+	if pageID == "" {
+		slog.Warn("pancake: could not determine page_id from webhook payload")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if convType != "INBOX" {
+		slog.Info("pancake: skipping non-inbox conversation event",
+			"page_id", pageID,
+			"conv_id", data.Conversation.ID,
+			"conv_type", convType,
+			"msg_id", data.Message.ID)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	r.mu.RLock()
-	target := r.instances[data.PageID]
+	target := r.instances[pageID]
 	r.mu.RUnlock()
 
 	if target == nil {
-		slog.Warn("pancake: no channel instance for page_id", "page_id", data.PageID)
+		// Log all registered page IDs for debugging.
+		r.mu.RLock()
+		var registered []string
+		for pid := range r.instances {
+			registered = append(registered, pid)
+		}
+		r.mu.RUnlock()
+		slog.Warn("pancake: no channel instance for page_id",
+			"page_id", pageID,
+			"registered_pages", registered)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -122,14 +184,47 @@ func (r *webhookRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		sig := req.Header.Get("X-Pancake-Signature")
 		if !verifyHMAC(body, target.webhookSecret, sig) {
 			slog.Warn("security.pancake_webhook_signature_mismatch",
-				"page_id", data.PageID,
+				"page_id", pageID,
 				"remote_addr", req.RemoteAddr)
-			// Still return 200 to avoid Pancake webhook suspension.
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 	}
 
-	target.handleMessagingEvent(data)
+	// Build normalized MessagingData from actual Pancake payload.
+	msgContent := data.Message.Message
+	if msgContent == "" {
+		msgContent = data.Message.OriginalMessage
+	}
+	if msgContent == "" {
+		msgContent = data.Message.Content
+	}
+	if msgContent == "" {
+		msgContent = data.Conversation.Snippet
+	}
+
+	normalized := MessagingData{
+		PageID:         pageID,
+		ConversationID: data.Conversation.ID,
+		Type:           convType,
+		Platform:       target.platform,
+		Message: MessagingMessage{
+			ID:          data.Message.ID,
+			Content:     msgContent,
+			SenderID:    data.Conversation.From.ID,
+			SenderName:  data.Conversation.From.Name,
+			Attachments: data.Message.Attachments,
+		},
+	}
+
+	target.handleMessagingEvent(normalized)
 	w.WriteHeader(http.StatusOK)
+}
+
+// truncateBody returns a string preview of body, truncated to maxLen bytes.
+func truncateBody(body []byte, maxLen int) string {
+	if len(body) <= maxLen {
+		return string(body)
+	}
+	return string(body[:maxLen]) + "..."
 }

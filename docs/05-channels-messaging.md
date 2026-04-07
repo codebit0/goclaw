@@ -88,9 +88,9 @@ Every channel must implement the base interface:
 | Interface | Purpose | Implemented By |
 |-----------|---------|----------------|
 | `StreamingChannel` | Real-time streaming updates | Telegram, Slack |
-| `WebhookChannel` | Webhook HTTP handler mounting | Feishu |
+| `WebhookChannel` | Webhook HTTP handler mounting | Facebook, Feishu/Lark, Pancake |
 | `ReactionChannel` | Status reactions on messages | Telegram, Slack, Feishu |
-| `BlockReplyChannel` | Override gateway block_reply setting | Slack |
+| `BlockReplyChannel` | Override gateway block_reply setting | Discord, Feishu/Lark, Pancake, Slack, Zalo OA, Zalo Personal |
 
 `BaseChannel` provides a shared implementation that all channels embed: allowlist matching, `HandleMessage()`, `CheckPolicy()`, and user ID extraction.
 

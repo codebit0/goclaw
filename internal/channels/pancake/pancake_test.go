@@ -1,12 +1,18 @@
 package pancake
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/channels"
 )
 
 // TestFactory_Valid verifies Factory creates a Channel from valid JSON creds/config.
@@ -147,7 +153,7 @@ func TestWebhookRouterReturns200(t *testing.T) {
 	router := &webhookRouter{instances: make(map[string]*Channel)}
 
 	t.Run("POST event returns 200", func(t *testing.T) {
-		body := `{"event":"messaging","data":{}}`
+		body := `{"data":{"conversation":{"id":"123_456","type":"INBOX","from":{"id":"456"}},"message":{"id":"m1"}}}`
 		req := httptest.NewRequest(http.MethodPost, "/channels/pancake/webhook",
 			strings.NewReader(body))
 		w := httptest.NewRecorder()
@@ -194,7 +200,6 @@ func TestMessageHandlerSkipsSelfReply(t *testing.T) {
 			SenderID:   pageID, // same as page → must be skipped before HandleMessage
 			SenderName: "Page Bot",
 			Content:    "Hello",
-			CreatedAt:  time.Now().Unix(),
 		},
 	}
 
@@ -208,3 +213,191 @@ func TestMessageHandlerSkipsSelfReply(t *testing.T) {
 	}
 }
 
+func TestMessageHandlerPublishesMessageIDMetadata(t *testing.T) {
+	msgBus := bus.New()
+	ch := &Channel{
+		BaseChannel: channels.NewBaseChannel(channels.TypePancake, msgBus, nil),
+		pageID:      "page-123",
+	}
+
+	ch.handleMessagingEvent(MessagingData{
+		PageID:         "page-123",
+		ConversationID: "conv-1",
+		Type:           "INBOX",
+		Platform:       "facebook",
+		Message: MessagingMessage{
+			ID:       "msg-123",
+			SenderID: "user-1",
+			Content:  "hello",
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	msg, ok := msgBus.ConsumeInbound(ctx)
+	if !ok {
+		t.Fatal("expected inbound message to be published")
+	}
+	if got, want := msg.Metadata["message_id"], "msg:msg-123"; got != want {
+		t.Fatalf("metadata.message_id = %q, want %q", got, want)
+	}
+}
+
+func TestMessageHandlerSkipsRecentOutboundEcho(t *testing.T) {
+	msgBus := bus.New()
+	ch := &Channel{
+		BaseChannel: channels.NewBaseChannel(channels.TypePancake, msgBus, nil),
+		pageID:      "page-123",
+	}
+	ch.rememberOutboundEcho("conv-1", "hello from bot")
+
+	ch.handleMessagingEvent(MessagingData{
+		PageID:         "page-123",
+		ConversationID: "conv-1",
+		Type:           "INBOX",
+		Platform:       "facebook",
+		Message: MessagingMessage{
+			ID:       "msg-echo-1",
+			SenderID: "user-1",
+			Content:  "hello from bot",
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	if _, ok := msgBus.ConsumeInbound(ctx); ok {
+		t.Fatal("expected echoed outbound message to be dropped")
+	}
+}
+
+func TestBlockReplyEnabledUsesChannelOverride(t *testing.T) {
+	enabled := true
+	ch := &Channel{
+		config: pancakeInstanceConfig{
+			BlockReply: &enabled,
+		},
+	}
+
+	got := ch.BlockReplyEnabled()
+	if got == nil || !*got {
+		t.Fatalf("BlockReplyEnabled() = %v, want true", got)
+	}
+}
+
+type captureTransport struct {
+	req  *http.Request
+	body []byte
+	resp *http.Response
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.req = req.Clone(req.Context())
+	if req.Body != nil {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		t.body = body
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	if t.resp != nil {
+		return t.resp, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"success":true}`)),
+		Request:    req,
+	}, nil
+}
+
+func TestAPIClientSendMessageMatchesOfficialContract(t *testing.T) {
+	transport := &captureTransport{}
+	client := NewAPIClient("user-token", "page-token", "page-123")
+	client.httpClient = &http.Client{Transport: transport}
+
+	if err := client.SendMessage(context.Background(), "conv-456", "xin chao"); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+
+	if transport.req == nil {
+		t.Fatal("expected outbound request to be captured")
+	}
+	if got, want := transport.req.URL.Path, "/api/public_api/v1/pages/page-123/conversations/conv-456/messages"; got != want {
+		t.Fatalf("request path = %q, want %q", got, want)
+	}
+	if got := transport.req.URL.Query().Get("page_access_token"); got != "page-token" {
+		t.Fatalf("page_access_token query = %q, want %q", got, "page-token")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(transport.body, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got, want := payload["action"], "reply_inbox"; got != want {
+		t.Fatalf("payload.action = %#v, want %#v", got, want)
+	}
+	if got, want := payload["message"], "xin chao"; got != want {
+		t.Fatalf("payload.message = %#v, want %#v", got, want)
+	}
+	if _, exists := payload["content"]; exists {
+		t.Fatalf("payload must not contain legacy content field: %s", string(transport.body))
+	}
+	if _, exists := payload["attachment_id"]; exists {
+		t.Fatalf("payload must not contain attachment_id field: %s", string(transport.body))
+	}
+}
+
+func TestAPIClientSendMessageReturnsBodyLevelError(t *testing.T) {
+	transport := &captureTransport{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"success":false,"message":"conversation blocked"}`)),
+		},
+	}
+	client := NewAPIClient("user-token", "page-token", "page-123")
+	client.httpClient = &http.Client{Transport: transport}
+
+	err := client.SendMessage(context.Background(), "conv-456", "xin chao")
+	if err == nil {
+		t.Fatal("expected SendMessage to return body-level error")
+	}
+	if !strings.Contains(err.Error(), "conversation blocked") {
+		t.Fatalf("SendMessage error = %v, want body-level message", err)
+	}
+}
+
+func TestAPIClientUploadMediaMatchesOfficialContract(t *testing.T) {
+	transport := &captureTransport{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"id":"upload-123","success":true}`)),
+		},
+	}
+	client := NewAPIClient("user-token", "page-token", "page-123")
+	client.httpClient = &http.Client{Transport: transport}
+
+	id, err := client.UploadMedia(context.Background(), "photo.jpg", strings.NewReader("file-bytes"), "image/jpeg")
+	if err != nil {
+		t.Fatalf("UploadMedia returned error: %v", err)
+	}
+	if id != "upload-123" {
+		t.Fatalf("UploadMedia id = %q, want %q", id, "upload-123")
+	}
+	if transport.req == nil {
+		t.Fatal("expected upload request to be captured")
+	}
+	if got, want := transport.req.URL.Path, "/api/public_api/v1/pages/page-123/upload_contents"; got != want {
+		t.Fatalf("upload path = %q, want %q", got, want)
+	}
+	if got := transport.req.URL.Query().Get("page_access_token"); got != "page-token" {
+		t.Fatalf("upload page_access_token query = %q, want %q", got, "page-token")
+	}
+	if !strings.HasPrefix(transport.req.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+		t.Fatalf("upload Content-Type = %q, want multipart/form-data", transport.req.Header.Get("Content-Type"))
+	}
+}

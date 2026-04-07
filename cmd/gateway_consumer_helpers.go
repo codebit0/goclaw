@@ -91,6 +91,18 @@ func extractSessionMetadata(msg bus.InboundMessage, peerKind string) map[string]
 	return meta
 }
 
+// buildPancakeSessionLabel returns "Pancake:{senderName}:{pageName}" with non-empty parts only.
+func buildPancakeSessionLabel(senderName, pageName string) string {
+	label := "Pancake"
+	if senderName != "" {
+		label += ":" + senderName
+	}
+	if pageName != "" {
+		label += ":" + pageName
+	}
+	return label
+}
+
 // buildAnnounceOutMeta builds outbound metadata for announce messages so that
 // Send() can route replies to the correct forum topic or DM thread.
 func buildAnnounceOutMeta(localKey string) map[string]string {

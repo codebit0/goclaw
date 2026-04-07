@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +20,13 @@ import (
 const (
 	dedupTTL        = 24 * time.Hour
 	dedupCleanEvery = 5 * time.Minute
+	outboundEchoTTL = 45 * time.Second
+)
+
+var (
+	htmlBreakTagRe = regexp.MustCompile(`(?i)<br\b[^>]*\/?>`)
+	htmlCloseTagRe = regexp.MustCompile(`(?i)</(?:div|p|li|ul|ol|h[1-6])>`)
+	htmlTagRe      = regexp.MustCompile(`(?i)<[^>]+>`)
 )
 
 // Channel implements channels.Channel and channels.WebhookChannel for Pancake (pages.fm).
@@ -26,11 +36,15 @@ type Channel struct {
 	config        pancakeInstanceConfig
 	apiClient     *APIClient
 	pageID        string
+	pageName      string // resolved from Pancake page metadata at Start()
 	platform      string // resolved from Pancake page metadata at Start()
 	webhookSecret string // optional HMAC-SHA256 secret for webhook verification
 
 	// dedup prevents processing duplicate webhook deliveries.
 	dedup sync.Map // eventKey(string) → time.Time
+
+	// recentOutbound suppresses short-lived webhook echoes of our own text replies.
+	recentOutbound sync.Map // conversationID + "\x00" + normalized content → time.Time
 
 	stopCh  chan struct{}
 	stopCtx context.Context
@@ -103,12 +117,17 @@ func (ch *Channel) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Resolve platform from page metadata (best-effort — don't fail on this).
-	if ch.platform == "" {
+	// Resolve platform and page name from page metadata (best-effort — don't fail on this).
+	if ch.platform == "" || ch.pageName == "" {
 		if page, err := ch.apiClient.GetPage(ctx); err != nil {
 			slog.Warn("pancake: could not resolve platform from page metadata", "page_id", ch.pageID, "err", err)
-		} else if page.Platform != "" {
-			ch.platform = page.Platform
+		} else {
+			if page.Platform != "" {
+				ch.platform = page.Platform
+			}
+			if page.Name != "" {
+				ch.pageName = page.Name
+			}
 		}
 	}
 
@@ -139,6 +158,13 @@ func (ch *Channel) Stop(_ context.Context) error {
 
 // Send delivers an outbound message via Pancake API.
 func (ch *Channel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	slog.Info("pancake: Send called",
+		"page_id", ch.pageID,
+		"chat_id", msg.ChatID,
+		"content_len", len(msg.Content),
+		"platform", ch.platform,
+		"channel_name", ch.Name())
+
 	conversationID := msg.ChatID
 	if conversationID == "" {
 		return fmt.Errorf("pancake: chat_id (conversation_id) is required for outbound message")
@@ -153,25 +179,39 @@ func (ch *Channel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 			"page_id", ch.pageID, "err", err)
 	}
 
-	// Send with first attachment if available.
+	// Pancake's official contract makes `message` and `content_ids` mutually exclusive.
+	// Deliver uploaded media first, then follow with text chunks if needed.
 	if len(attachmentIDs) > 0 {
-		if err := ch.apiClient.SendMessageWithAttachment(ctx, conversationID, text, attachmentIDs[0]); err != nil {
+		if err := ch.apiClient.SendAttachmentMessage(ctx, conversationID, attachmentIDs); err != nil {
 			ch.handleAPIError(err)
 			return err
 		}
-		return nil
+		if text == "" {
+			return nil
+		}
 	}
 
 	// Text-only: split into platform-appropriate chunks.
+	// Store echo fingerprints BEFORE sending so that webhook echoes arriving
+	// while the HTTP round-trip is in flight are already recognized as self-sent.
 	parts := splitMessage(text, ch.maxMessageLength())
+	for _, part := range parts {
+		ch.rememberOutboundEcho(conversationID, part)
+	}
 	for _, part := range parts {
 		if err := ch.apiClient.SendMessage(ctx, conversationID, part); err != nil {
 			ch.handleAPIError(err)
+			// Remove pre-stored echo fingerprints for unsent parts so they
+			// don't suppress genuine customer messages that happen to match.
+			ch.forgetOutboundEcho(conversationID, part)
 			return err
 		}
 	}
 	return nil
 }
+
+// BlockReplyEnabled returns the per-channel block_reply override (nil = inherit gateway default).
+func (ch *Channel) BlockReplyEnabled() *bool { return ch.config.BlockReply }
 
 // WebhookHandler returns the shared webhook path and global router as handler.
 // Only the first pancake instance mounts the route; others return ("", nil).
@@ -234,6 +274,88 @@ func (ch *Channel) isDup(key string) bool {
 	return loaded
 }
 
+func (ch *Channel) forgetOutboundEcho(conversationID, content string) {
+	if conversationID == "" {
+		return
+	}
+	normalized := normalizeEchoContent(content)
+	if normalized == "" {
+		return
+	}
+	ch.recentOutbound.Delete(conversationID + "\x00" + normalized)
+}
+
+func (ch *Channel) rememberOutboundEcho(conversationID, content string) {
+	if conversationID == "" {
+		return
+	}
+	normalized := normalizeEchoContent(content)
+	if normalized == "" {
+		return
+	}
+	ch.recentOutbound.Store(conversationID+"\x00"+normalized, time.Now())
+}
+
+func (ch *Channel) isRecentOutboundEcho(conversationID, content string) bool {
+	if conversationID == "" {
+		return false
+	}
+	normalized := normalizeEchoContent(content)
+	if normalized == "" {
+		return false
+	}
+	key := conversationID + "\x00" + normalized
+	v, ok := ch.recentOutbound.Load(key)
+	if !ok {
+		return false
+	}
+	ts, ok := v.(time.Time)
+	if !ok {
+		ch.recentOutbound.Delete(key)
+		return false
+	}
+	if time.Since(ts) > outboundEchoTTL {
+		ch.recentOutbound.Delete(key)
+		return false
+	}
+	return true
+}
+
+func normalizeEchoContent(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+
+	content = html.UnescapeString(content)
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	content = htmlBreakTagRe.ReplaceAllString(content, "\n")
+	content = htmlCloseTagRe.ReplaceAllString(content, "\n")
+	content = htmlTagRe.ReplaceAllString(content, "")
+
+	lines := strings.Split(content, "\n")
+	normalized := make([]string, 0, len(lines))
+	pendingBlank := false
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			if len(normalized) == 0 || pendingBlank {
+				continue
+			}
+			pendingBlank = true
+			continue
+		}
+		if pendingBlank {
+			normalized = append(normalized, "")
+			pendingBlank = false
+		}
+		normalized = append(normalized, line)
+	}
+
+	return strings.TrimSpace(strings.Join(normalized, "\n"))
+}
+
 // runDedupCleaner evicts dedup entries older than dedupTTL every dedupCleanEvery.
 func (ch *Channel) runDedupCleaner() {
 	ticker := time.NewTicker(dedupCleanEvery)
@@ -247,6 +369,12 @@ func (ch *Channel) runDedupCleaner() {
 			ch.dedup.Range(func(k, v any) bool {
 				if t, ok := v.(time.Time); ok && now.Sub(t) > dedupTTL {
 					ch.dedup.Delete(k)
+				}
+				return true
+			})
+			ch.recentOutbound.Range(func(k, v any) bool {
+				if t, ok := v.(time.Time); ok && now.Sub(t) > outboundEchoTTL {
+					ch.recentOutbound.Delete(k)
 				}
 				return true
 			})
