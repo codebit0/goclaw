@@ -68,7 +68,11 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 	}
 
 	if cfg.Channels.WhatsApp.Enabled {
-		wa, err := whatsapp.New(cfg.Channels.WhatsApp, msgBus, pgStores.Pairing, pgStores.DB, pgStores.PendingMessages)
+		waDialect := "pgx"
+		if strings.Contains(fmt.Sprintf("%T", pgStores.DB.Driver()), "sqlite") {
+			waDialect = "sqlite3"
+		}
+		wa, err := whatsapp.New(cfg.Channels.WhatsApp, msgBus, pgStores.Pairing, pgStores.DB, pgStores.PendingMessages, waDialect)
 		if err != nil {
 			channelMgr.RecordFailure(channels.TypeWhatsApp, "", err)
 			slog.Error("failed to initialize whatsapp channel", "error", err)
