@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -35,6 +36,9 @@ func testExecToolFromGatewaySetup(t *testing.T, workspace, dataDir string) *tool
 }
 
 func TestSetupToolRegistryExecWorkspacePaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink setup requires elevated privileges on Windows")
+	}
 	dataDir := t.TempDir()
 	workspace := filepath.Join(dataDir, "personal")
 	teamWorkspace := filepath.Join(dataDir, "teams", "team-123")
@@ -46,48 +50,74 @@ func TestSetupToolRegistryExecWorkspacePaths(t *testing.T) {
 
 	execTool := testExecToolFromGatewaySetup(t, workspace, dataDir)
 
+	uploadPath := filepath.Join(workspace, ".uploads", "Quarterly Report.png")
+	if err := os.MkdirAll(filepath.Dir(uploadPath), 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(uploadPath, []byte("ok"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	teamFilePath := filepath.Join(teamWorkspace, "Quarterly Report.png")
+	if err := os.WriteFile(teamFilePath, []byte("ok"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	protectedPath := filepath.Join(dataDir, "config.json")
+	if err := os.WriteFile(protectedPath, []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	symlinkPath := filepath.Join(teamWorkspace, "leak.txt")
+	if err := os.Symlink(protectedPath, symlinkPath); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
 	tests := []struct {
-		name        string
-		ctx         context.Context
-		commandPath string
-		wantDenied  bool
+		name       string
+		ctx        context.Context
+		command    string
+		wantDenied bool
 	}{
 		{
-			name:        "personal_workspace_uploads_allowed",
-			ctx:         tools.WithToolWorkspace(context.Background(), workspace),
-			commandPath: filepath.Join(workspace, ".uploads", "issue-739.png"),
+			name:    "personal_workspace_prefixed_uploads_allowed",
+			ctx:     tools.WithToolWorkspace(context.Background(), workspace),
+			command: "printf '%s' file=@\"" + uploadPath + "\"",
 		},
 		{
-			name:        "team_workspace_files_allowed",
-			ctx:         tools.WithToolTeamWorkspace(tools.WithToolWorkspace(context.Background(), workspace), teamWorkspace),
-			commandPath: filepath.Join(teamWorkspace, "issue-739.png"),
+			name:    "team_workspace_quoted_input_allowed",
+			ctx:     tools.WithToolTeamWorkspace(tools.WithToolWorkspace(context.Background(), workspace), teamWorkspace),
+			command: "printf '%s' --input=\"" + teamFilePath + "\"",
 		},
 		{
-			name:        "unrelated_data_dir_path_denied",
-			ctx:         tools.WithToolWorkspace(context.Background(), workspace),
-			commandPath: filepath.Join(dataDir, "config.json"),
-			wantDenied:  true,
+			name:       "team_workspace_symlink_escape_denied",
+			ctx:        tools.WithToolTeamWorkspace(tools.WithToolWorkspace(context.Background(), workspace), teamWorkspace),
+			command:    "printf '%s' " + symlinkPath,
+			wantDenied: true,
 		},
 		{
-			name:        "workspace_local_dotgoclaw_denied",
-			ctx:         tools.WithToolWorkspace(context.Background(), workspace),
-			commandPath: filepath.Join(workspace, ".goclaw", "secrets.json"),
-			wantDenied:  true,
+			name:       "unrelated_data_dir_path_denied",
+			ctx:        tools.WithToolWorkspace(context.Background(), workspace),
+			command:    "printf '%s' " + protectedPath,
+			wantDenied: true,
+		},
+		{
+			name:       "workspace_local_dotgoclaw_denied",
+			ctx:        tools.WithToolWorkspace(context.Background(), workspace),
+			command:    "printf '%s' " + filepath.Join(workspace, ".goclaw", "secrets.json"),
+			wantDenied: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result := execTool.Execute(tc.ctx, map[string]any{
-				"command": "printf '%s' " + tc.commandPath,
+				"command": tc.command,
 			})
 
 			denied := strings.Contains(result.ForLLM, "command denied by safety policy")
 			if denied != tc.wantDenied {
 				t.Fatalf("denied = %v, want %v; output = %s", denied, tc.wantDenied, result.ForLLM)
 			}
-			if !tc.wantDenied && !strings.Contains(result.ForLLM, tc.commandPath) {
-				t.Fatalf("expected output to contain %q, got: %s", tc.commandPath, result.ForLLM)
+			if !tc.wantDenied && !strings.Contains(result.ForLLM, "Quarterly Report.png") {
+				t.Fatalf("expected output to contain quoted file path, got: %s", result.ForLLM)
 			}
 		})
 	}

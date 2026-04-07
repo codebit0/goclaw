@@ -173,12 +173,18 @@ func TestExecute_RejectsNULByte(t *testing.T) {
 }
 
 func TestPathExemptions(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
 	tool := &ExecTool{
-		workspace: "/workspace",
+		workspace: workspace,
 		restrict:  false,
 	}
-	tool.DenyPaths("/app/data", ".goclaw/")
-	tool.AllowPathExemptions(".goclaw/skills-store/", "/app/data/skills-store/")
+	tool.DenyPaths(dataDir, ".goclaw/")
+	tool.AllowPathExemptions(".goclaw/skills-store/", filepath.Join(dataDir, "skills-store")+"/")
 
 	cases := []struct {
 		name  string
@@ -336,30 +342,24 @@ func TestPathExemptions(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			normalizedCmd := normalizeCommand(tc.cmd)
+			normalizedCmd := strings.ReplaceAll(normalizeCommand(tc.cmd), "/app/data", dataDir)
 			denied := false
 			for _, pattern := range allPatterns {
 				if !pattern.MatchString(normalizedCmd) {
 					continue
 				}
 				// Replicate per-field exemption logic from Execute()
-				fields := strings.Fields(strings.TrimSpace(normalizedCmd))
+				fields := parseExecCommandWords(strings.TrimSpace(normalizedCmd))
 				matchingFields := 0
 				exemptFields := 0
 				for _, field := range fields {
-					clean := strings.Trim(field, `"'`)
+					clean := strings.TrimSpace(field)
 					if !pattern.MatchString(clean) {
 						continue
 					}
 					matchingFields++
-					if strings.Contains(clean, "..") {
-						continue // traversal — never exempt
-					}
-					for _, ex := range tool.denyExemptions {
-						if strings.HasPrefix(clean, ex) {
-							exemptFields++
-							break
-						}
+					if matchesAnyPathExemption(clean, tool.denyExemptions, workspace) {
+						exemptFields++
 					}
 				}
 				exempt := matchingFields > 0 && exemptFields == matchingFields
@@ -383,11 +383,16 @@ func TestPathExemptions(t *testing.T) {
 // path and an exempt path in different arguments is correctly denied.
 // Per-field matching ensures the non-exempt field causes denial.
 func TestPathExemptions_MixedArgs(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
 	tool := &ExecTool{}
-	tool.DenyPaths("/app/data")
-	tool.AllowPathExemptions("/app/data/skills-store/")
+	tool.DenyPaths(dataDir)
+	tool.AllowPathExemptions(filepath.Join(dataDir, "skills-store") + "/")
 
-	cmd := "cat /app/data/config.json /app/data/skills-store/tool.py"
+	cmd := "cat " + filepath.Join(dataDir, "config.json") + " " + filepath.Join(dataDir, "skills-store", "tool.py")
 	normalizedCmd := normalizeCommand(cmd)
 
 	denied := false
@@ -395,23 +400,17 @@ func TestPathExemptions_MixedArgs(t *testing.T) {
 		if !pattern.MatchString(normalizedCmd) {
 			continue
 		}
-		fields := strings.Fields(strings.TrimSpace(normalizedCmd))
+		fields := parseExecCommandWords(strings.TrimSpace(normalizedCmd))
 		matchingFields := 0
 		exemptFields := 0
 		for _, field := range fields {
-			clean := strings.Trim(field, `"'`)
+			clean := strings.TrimSpace(field)
 			if !pattern.MatchString(clean) {
 				continue
 			}
 			matchingFields++
-			if strings.Contains(clean, "..") {
-				continue
-			}
-			for _, ex := range tool.denyExemptions {
-				if strings.HasPrefix(clean, ex) {
-					exemptFields++
-					break
-				}
+			if matchesAnyPathExemption(clean, tool.denyExemptions, workspace) {
+				exemptFields++
 			}
 		}
 		if matchingFields == 0 || exemptFields != matchingFields {
@@ -506,6 +505,70 @@ func TestExecute_DoesNotExemptWorkspaceLocalDotGoclawPaths(t *testing.T) {
 
 	if !strings.Contains(result.ForLLM, "command denied by safety policy") {
 		t.Fatalf("expected workspace-local .goclaw path to remain denied, got: %s", result.ForLLM)
+	}
+}
+
+func TestExecute_AllowsQuotedAndPrefixedUploadArguments(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(dataDir, "teams", "team-123")
+	if err := os.MkdirAll(filepath.Join(workspace, ".uploads"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	target := filepath.Join(workspace, ".uploads", "Quarterly Report.png")
+	if err := os.WriteFile(target, []byte("ok"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	tool := NewExecTool("/workspace", false)
+	tool.DenyPaths(dataDir)
+
+	ctx := WithToolWorkspace(context.Background(), workspace)
+	result := tool.Execute(ctx, map[string]any{
+		"command": "printf '%s' file=@\"" + target + "\"",
+	})
+	if strings.Contains(result.ForLLM, "command denied by safety policy") {
+		t.Fatalf("expected quoted/prefixed upload argument to bypass deny, got: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "file=@"+target) {
+		t.Fatalf("expected output to contain prefixed path, got: %s", result.ForLLM)
+	}
+}
+
+func TestExecute_DoesNotExemptSymlinkEscapeInsideTeamWorkspace(t *testing.T) {
+	if err := os.MkdirAll(t.TempDir(), 0755); err != nil {
+		t.Fatalf("TempDir setup error = %v", err)
+	}
+	dataDir := t.TempDir()
+	workspace := filepath.Join(dataDir, "personal")
+	teamWorkspace := filepath.Join(dataDir, "teams", "team-123")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.MkdirAll(teamWorkspace, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	protected := filepath.Join(dataDir, "config.json")
+	if err := os.WriteFile(protected, []byte("secret"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	linkPath := filepath.Join(teamWorkspace, "leak.txt")
+	if err := os.Symlink(protected, linkPath); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	tool := NewExecTool("/workspace", false)
+	tool.DenyPaths(dataDir)
+
+	ctx := WithToolWorkspace(context.Background(), workspace)
+	ctx = WithToolTeamWorkspace(ctx, teamWorkspace)
+	result := tool.Execute(ctx, map[string]any{
+		"command": "printf '%s' " + linkPath,
+	})
+
+	if !strings.Contains(result.ForLLM, "command denied by safety policy") {
+		t.Fatalf("expected symlink escape to remain denied, got: %s", result.ForLLM)
 	}
 }
 

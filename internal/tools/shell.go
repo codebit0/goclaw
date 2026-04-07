@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	shellwords "github.com/mattn/go-shellwords"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"golang.org/x/text/unicode/norm"
@@ -173,6 +175,158 @@ func matchesPathExemption(path string, exemptions []string) bool {
 	return false
 }
 
+func parseExecCommandWords(command string) []string {
+	var words []string
+	for _, segment := range splitExecCommandSegments(command) {
+		parser := shellwords.NewParser()
+		parser.ParseBacktick = false
+		parser.ParseEnv = false
+
+		segmentWords, err := parser.Parse(segment)
+		if err != nil || len(segmentWords) == 0 {
+			words = append(words, strings.Fields(segment)...)
+			continue
+		}
+		words = append(words, segmentWords...)
+	}
+	if len(words) == 0 {
+		return strings.Fields(command)
+	}
+	return words
+}
+
+func splitExecCommandSegments(command string) []string {
+	var segments []string
+	start := 0
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch {
+		case inSingle:
+			if ch == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			if ch == '\\' && i+1 < len(command) {
+				i++
+			} else if ch == '"' {
+				inDouble = false
+			}
+		default:
+			switch ch {
+			case '\\':
+				if i+1 < len(command) {
+					i++
+				}
+			case '\'':
+				inSingle = true
+			case '"':
+				inDouble = true
+			case ';', '|', '&', '<', '>', '\n', '\r':
+				if segment := strings.TrimSpace(command[start:i]); segment != "" {
+					segments = append(segments, segment)
+				}
+				start = i + 1
+			}
+		}
+	}
+
+	if tail := strings.TrimSpace(command[start:]); tail != "" {
+		segments = append(segments, tail)
+	}
+	return segments
+}
+
+func extractPathCandidates(word string) []string {
+	if word == "" {
+		return nil
+	}
+
+	queue := []string{word}
+	seen := make(map[string]struct{}, 4)
+	var out []string
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current == "" {
+			continue
+		}
+		if _, ok := seen[current]; ok {
+			continue
+		}
+		seen[current] = struct{}{}
+		if looksLikePathCandidate(current) {
+			out = append(out, current)
+		}
+		for _, sep := range []string{"=", "@"} {
+			if idx := strings.Index(current, sep); idx >= 0 && idx+1 < len(current) {
+				queue = append(queue, current[idx+1:])
+			}
+		}
+	}
+	return out
+}
+
+func looksLikePathCandidate(s string) bool {
+	if s == "" {
+		return false
+	}
+	if filepath.IsAbs(s) {
+		return true
+	}
+	return strings.HasPrefix(s, "./") ||
+		strings.HasPrefix(s, "../") ||
+		strings.HasPrefix(s, ".uploads/") ||
+		strings.HasPrefix(s, ".goclaw/") ||
+		strings.HasPrefix(s, "teams/") ||
+		strings.HasPrefix(s, "tenants/") ||
+		strings.HasPrefix(s, "~/") ||
+		strings.Contains(s, string(filepath.Separator))
+}
+
+func canonicalizeExecPath(path, baseDir string) (string, error) {
+	if strings.HasPrefix(path, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(homeDir, strings.TrimPrefix(path, "~/"))
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+	absPath, _ := filepath.Abs(filepath.Clean(path))
+	if real, err := filepath.EvalSymlinks(absPath); err == nil {
+		return real, nil
+	}
+	return resolveThroughExistingAncestors(absPath)
+}
+
+func matchesAnyPathExemption(word string, exemptions []string, baseDir string) bool {
+	for _, candidate := range extractPathCandidates(word) {
+		if strings.Contains(candidate, "..") {
+			continue
+		}
+		realCandidate, err := canonicalizeExecPath(candidate, baseDir)
+		if err != nil {
+			continue
+		}
+		for _, exemption := range exemptions {
+			realExemption, err := canonicalizeExecPath(exemption, baseDir)
+			if err != nil {
+				continue
+			}
+			if matchesPathExemption(realCandidate, []string{realExemption}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // SetApprovalManager sets the exec approval manager for this tool.
 func (t *ExecTool) SetApprovalManager(mgr *ExecApprovalManager, agentID string) {
 	t.approvalMgr = mgr
@@ -236,6 +390,11 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 	exemptions = append(exemptions, t.dynamicPathExemptions(ctx)...)
 
 	// Check for dangerous commands (applies to both host and sandbox).
+	wordFields := parseExecCommandWords(normalizedCommand)
+	pathBaseDir := ToolWorkspaceFromCtx(ctx)
+	if pathBaseDir == "" {
+		pathBaseDir = t.workspace
+	}
 	for _, pattern := range allPatterns {
 		if pattern.MatchString(normalizedCommand) {
 			// Check if exemption applies. Only exempt if EVERY field that
@@ -246,19 +405,19 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 			// path traversal ("..") to prevent exemption escape.
 			exempt := false
 			trimmed := strings.TrimSpace(normalizedCommand)
-			fields := strings.Fields(trimmed)
+			fields := wordFields
+			if len(fields) == 0 {
+				fields = strings.Fields(trimmed)
+			}
 			matchingFields := 0
 			exemptFields := 0
 			for _, field := range fields {
-				clean := strings.Trim(field, `"'`)
+				clean := strings.TrimSpace(field)
 				if !pattern.MatchString(clean) {
 					continue // field doesn't trigger this deny pattern
 				}
 				matchingFields++
-				if strings.Contains(clean, "..") {
-					continue // path traversal — never exempt
-				}
-				if matchesPathExemption(clean, exemptions) {
+				if matchesAnyPathExemption(clean, exemptions, pathBaseDir) {
 					exemptFields++
 				}
 			}
