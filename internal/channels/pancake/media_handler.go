@@ -2,6 +2,7 @@ package pancake
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"mime"
 	"os"
@@ -37,8 +38,13 @@ func (ch *Channel) handleMediaAttachments(ctx context.Context, msg bus.OutboundM
 }
 
 // uploadMediaFile opens a local file path and uploads it to the Pancake API.
+// path must be absolute to prevent directory traversal via relative paths.
 func (ch *Channel) uploadMediaFile(ctx context.Context, path string, contentType string) (string, error) {
-	f, err := os.Open(path)
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("pancake: media path must be absolute, got: %s", path)
+	}
+	f, err := os.Open(cleanPath)
 	if err != nil {
 		return "", err
 	}
@@ -46,10 +52,10 @@ func (ch *Channel) uploadMediaFile(ctx context.Context, path string, contentType
 
 	ct := contentType
 	if ct == "" {
-		ct = mimeTypeFromPath(path)
+		ct = mimeTypeFromPath(cleanPath)
 	}
 
-	return ch.apiClient.UploadMedia(ctx, filepath.Base(path), f, ct)
+	return ch.apiClient.UploadMedia(ctx, filepath.Base(cleanPath), f, ct)
 }
 
 // mimeTypeFromPath guesses the MIME type from the file extension.

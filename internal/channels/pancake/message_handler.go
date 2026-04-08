@@ -32,6 +32,13 @@ func (ch *Channel) handleMessagingEvent(data MessagingData) {
 			"sender_id", data.Message.SenderID)
 		return
 	}
+	if isAssignedStaff(data.AssigneeIDs, data.Message.SenderID) {
+		slog.Info("pancake: skipping assigned staff message",
+			"page_id", ch.pageID,
+			"sender_id", data.Message.SenderID,
+			"conversation_id", data.ConversationID)
+		return
+	}
 
 	if data.Message.SenderID == "" {
 		slog.Warn("pancake: message missing sender_id, skipping", "msg_id", data.Message.ID)
@@ -111,4 +118,16 @@ func buildMessageContent(data MessagingData) string {
 func stripHTML(s string) string {
 	s = htmlTagRe.ReplaceAllString(s, "")
 	return html.UnescapeString(strings.TrimSpace(s))
+}
+
+func isAssignedStaff(assigneeIDs []string, senderID string) bool {
+	if senderID == "" {
+		return false
+	}
+	for _, assigneeID := range assigneeIDs {
+		if assigneeID == senderID {
+			return true
+		}
+	}
+	return false
 }

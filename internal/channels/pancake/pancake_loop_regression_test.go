@@ -89,6 +89,171 @@ func TestWebhookRouterSkipsNonInboxConversationEvents(t *testing.T) {
 	}
 }
 
+func TestWebhookRouterPrefersMessageSenderOverConversationSender(t *testing.T) {
+	msgBus := bus.New()
+	target := &Channel{
+		BaseChannel: channels.NewBaseChannel(channels.TypePancake, msgBus, nil),
+		pageID:      "page-123",
+		platform:    "facebook",
+	}
+	router := &webhookRouter{
+		instances: map[string]*Channel{
+			"page-123": target,
+		},
+	}
+
+	body := `{
+		"page_id": "page-123",
+		"event_type": "messaging",
+		"data": {
+			"conversation": {
+				"id": "conv-1",
+				"type": "INBOX",
+				"from": {
+					"id": "user-initiator",
+					"name": "Conversation Starter"
+				}
+			},
+			"message": {
+				"id": "msg-actual-sender-1",
+				"message": "xin chao",
+				"from": {
+					"id": "user-actual",
+					"name": "Actual Sender",
+					"page_customer_id": "pc-123"
+				}
+			}
+		}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/channels/pancake/webhook", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	msg, ok := msgBus.ConsumeInbound(ctx)
+	if !ok {
+		t.Fatal("expected inbound message to be published")
+	}
+	if got, want := msg.SenderID, "user-actual"; got != want {
+		t.Fatalf("sender_id = %q, want %q", got, want)
+	}
+	if got, want := msg.Metadata["display_name"], "Actual Sender"; got != want {
+		t.Fatalf("metadata.display_name = %q, want %q", got, want)
+	}
+}
+
+func TestWebhookRouterSkipsPageAuthoredInboxReply(t *testing.T) {
+	msgBus := bus.New()
+	target := &Channel{
+		BaseChannel: channels.NewBaseChannel(channels.TypePancake, msgBus, nil),
+		pageID:      "page-123",
+		platform:    "facebook",
+	}
+	router := &webhookRouter{
+		instances: map[string]*Channel{
+			"page-123": target,
+		},
+	}
+
+	body := `{
+		"page_id": "page-123",
+		"event_type": "messaging",
+		"data": {
+			"conversation": {
+				"id": "conv-1",
+				"type": "INBOX",
+				"from": {
+					"id": "user-1",
+					"name": "Customer"
+				}
+			},
+			"message": {
+				"id": "msg-page-reply-1",
+				"message": "manual page reply",
+				"from": {
+					"id": "page-123",
+					"name": "Page Bot"
+				}
+			}
+		}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/channels/pancake/webhook", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	if _, ok := msgBus.ConsumeInbound(ctx); ok {
+		t.Fatal("expected page-authored reply not to be published inbound")
+	}
+}
+
+func TestWebhookRouterSkipsAssignedStaffReply(t *testing.T) {
+	msgBus := bus.New()
+	target := &Channel{
+		BaseChannel: channels.NewBaseChannel(channels.TypePancake, msgBus, nil),
+		pageID:      "page-123",
+		platform:    "facebook",
+	}
+	router := &webhookRouter{
+		instances: map[string]*Channel{
+			"page-123": target,
+		},
+	}
+
+	body := `{
+		"page_id": "page-123",
+		"event_type": "messaging",
+		"data": {
+			"conversation": {
+				"id": "conv-1",
+				"type": "INBOX",
+				"assignee_ids": ["staff-1"],
+				"from": {
+					"id": "user-1",
+					"name": "Customer"
+				}
+			},
+			"message": {
+				"id": "msg-staff-reply-1",
+				"message": "manual staff reply",
+				"from": {
+					"id": "staff-1",
+					"name": "Assigned Staff"
+				}
+			}
+		}
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/channels/pancake/webhook", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	if _, ok := msgBus.ConsumeInbound(ctx); ok {
+		t.Fatal("expected assigned staff reply not to be published inbound")
+	}
+}
+
 func TestSendThenWebhookEchoDoesNotRepublishInbound(t *testing.T) {
 	msgBus := bus.New()
 	api := NewAPIClient("user-token", "page-token", "page-123")

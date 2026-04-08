@@ -45,17 +45,19 @@ type WebhookData struct {
 
 // WebhookConversation holds the conversation metadata from a Pancake webhook.
 type WebhookConversation struct {
-	ID      string        `json:"id"`   // format: "pageID_senderID"
-	Type    string        `json:"type"` // "INBOX" or "COMMENT"
-	From    WebhookSender `json:"from"`
-	Snippet string        `json:"snippet,omitempty"`
+	ID          string        `json:"id"`                    // format: "pageID_senderID"
+	Type        string        `json:"type"`                  // "INBOX" or "COMMENT"
+	AssigneeIDs []string      `json:"assignee_ids,omitempty"` // Pancake staff IDs assigned to this conversation
+	From        WebhookSender `json:"from"`
+	Snippet     string        `json:"snippet,omitempty"`
 }
 
 // WebhookSender identifies the message sender.
 type WebhookSender struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Email          string `json:"email,omitempty"`
+	PageCustomerID string `json:"page_customer_id,omitempty"`
 }
 
 // WebhookMessage holds the message payload from a Pancake webhook.
@@ -64,6 +66,7 @@ type WebhookMessage struct {
 	Message         string              `json:"message,omitempty"`          // primary text content
 	OriginalMessage string              `json:"original_message,omitempty"` // unformatted fallback
 	Content         string              `json:"content,omitempty"`          // legacy field
+	From            *WebhookSender      `json:"from,omitempty"`             // actual sender of this message
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	CreatedAt       json.Number         `json:"created_at,omitempty"`
 }
@@ -80,6 +83,7 @@ type MessagingData struct {
 	ConversationID string
 	Type           string // "INBOX" or "COMMENT"
 	Platform       string // "facebook", "zalo", "instagram", "tiktok", "whatsapp", "line"
+	AssigneeIDs    []string
 	Message        MessagingMessage
 }
 

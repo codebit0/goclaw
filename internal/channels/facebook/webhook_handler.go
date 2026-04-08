@@ -15,10 +15,11 @@ import (
 // WebhookHandler implements http.Handler for the Facebook webhook endpoint.
 // Handles both the GET verification challenge and POST event delivery.
 type WebhookHandler struct {
-	appSecret   string
-	verifyToken string
-	onComment   func(entry WebhookEntry, change ChangeValue)
-	onMessage   func(entry WebhookEntry, event MessagingEvent)
+	appSecret    string
+	verifyToken  string
+	extraSecrets []string // additional app secrets for multi-Meta-App deployments
+	onComment    func(entry WebhookEntry, change ChangeValue)
+	onMessage    func(entry WebhookEntry, event MessagingEvent)
 }
 
 // NewWebhookHandler creates a new WebhookHandler.
@@ -85,7 +86,17 @@ func (wh *WebhookHandler) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sig := r.Header.Get("X-Hub-Signature-256")
-	if !verifySignature(body, sig, wh.appSecret) {
+	verified := verifySignature(body, sig, wh.appSecret)
+	if !verified {
+		// Try extra secrets (multi-Meta-App deployments share one webhook endpoint).
+		for _, s := range wh.extraSecrets {
+			if verifySignature(body, sig, s) {
+				verified = true
+				break
+			}
+		}
+	}
+	if !verified {
 		slog.Warn("security.facebook_webhook_signature_invalid", "remote_addr", r.RemoteAddr)
 		w.WriteHeader(http.StatusOK) // return 200 so Facebook stops sending
 		return

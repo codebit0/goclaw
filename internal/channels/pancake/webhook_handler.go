@@ -203,16 +203,28 @@ func (r *webhookRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		msgContent = data.Conversation.Snippet
 	}
 
+	senderID := data.Conversation.From.ID
+	senderName := data.Conversation.From.Name
+	if data.Message.From != nil {
+		if data.Message.From.ID != "" {
+			senderID = data.Message.From.ID
+		}
+		if data.Message.From.Name != "" {
+			senderName = data.Message.From.Name
+		}
+	}
+
 	normalized := MessagingData{
 		PageID:         pageID,
 		ConversationID: data.Conversation.ID,
 		Type:           convType,
 		Platform:       target.platform,
+		AssigneeIDs:    append([]string(nil), data.Conversation.AssigneeIDs...),
 		Message: MessagingMessage{
 			ID:          data.Message.ID,
 			Content:     msgContent,
-			SenderID:    data.Conversation.From.ID,
-			SenderName:  data.Conversation.From.Name,
+			SenderID:    senderID,
+			SenderName:  senderName,
 			Attachments: data.Message.Attachments,
 		},
 	}

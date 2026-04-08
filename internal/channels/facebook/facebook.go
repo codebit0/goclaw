@@ -295,28 +295,43 @@ func (r *webhookRouter) webhookRoute() (string, http.Handler) {
 // ServeHTTP is the shared handler for all Facebook page webhooks.
 // Routes each entry to the matching channel instance by page_id.
 //
-// Single-Meta-App assumption: all registered page instances belong to the same Meta App
-// and share the same app_secret. This is the standard deployment model. Operators with
-// multiple Meta Apps should deploy separate GoClaw instances with separate webhook URLs.
+// Multi-Meta-App support: all registered page secrets are collected and tried in order.
+// A payload is accepted if its signature matches any known app_secret. In the common
+// case (single Meta App) there is exactly one secret and behavior is unchanged.
 func (r *webhookRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mu.RLock()
-	var appSecret, verifyToken string
+	var primarySecret, verifyToken string
+	var extraSecrets []string
+	seenSecrets := make(map[string]bool)
 	for _, ch := range r.instances {
-		appSecret = ch.webhookH.appSecret
-		verifyToken = ch.webhookH.verifyToken
-		break
+		s := ch.webhookH.appSecret
+		if primarySecret == "" {
+			primarySecret = s
+			verifyToken = ch.webhookH.verifyToken
+			seenSecrets[s] = true
+		} else if !seenSecrets[s] {
+			extraSecrets = append(extraSecrets, s)
+			seenSecrets[s] = true
+		}
 	}
 	r.mu.RUnlock()
 
-	if appSecret == "" {
+	if primarySecret == "" {
 		// No instances registered yet.
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
+	if len(extraSecrets) > 0 {
+		slog.Warn("security.facebook_multi_meta_app",
+			"extra_app_count", len(extraSecrets),
+			"note", "multiple Meta App secrets registered; payloads verified against all known secrets")
+	}
+
 	routingWH := &WebhookHandler{
-		appSecret:   appSecret,
-		verifyToken: verifyToken,
+		appSecret:    primarySecret,
+		verifyToken:  verifyToken,
+		extraSecrets: extraSecrets,
 	}
 	routingWH.onComment = func(entry WebhookEntry, change ChangeValue) {
 		r.mu.RLock()

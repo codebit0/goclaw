@@ -131,6 +131,12 @@ func (ch *Channel) Start(ctx context.Context) error {
 		}
 	}
 
+	if ch.webhookSecret == "" {
+		slog.Warn("security.pancake_webhook_no_secret",
+			"page_id", ch.pageID,
+			"note", "webhook_secret not configured; incoming webhook requests will not be authenticated")
+	}
+
 	globalRouter.register(ch)
 	ch.MarkHealthy("connected to page " + ch.pageID)
 	ch.SetRunning(true)
@@ -252,18 +258,20 @@ func (ch *Channel) maxMessageLength() int {
 	}
 }
 
-// splitMessage splits text into chunks no longer than maxLen.
+// splitMessage splits text into chunks no longer than maxLen Unicode code points.
+// Operates on runes (not bytes) to avoid splitting multi-byte characters (CJK, emoji, Vietnamese).
 func splitMessage(text string, maxLen int) []string {
-	if maxLen <= 0 || len(text) <= maxLen {
+	runes := []rune(text)
+	if maxLen <= 0 || len(runes) <= maxLen {
 		return []string{text}
 	}
 	var parts []string
-	for len(text) > maxLen {
-		parts = append(parts, text[:maxLen])
-		text = text[maxLen:]
+	for len(runes) > maxLen {
+		parts = append(parts, string(runes[:maxLen]))
+		runes = runes[maxLen:]
 	}
-	if text != "" {
-		parts = append(parts, text)
+	if len(runes) > 0 {
+		parts = append(parts, string(runes))
 	}
 	return parts
 }
