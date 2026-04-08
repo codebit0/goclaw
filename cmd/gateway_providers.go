@@ -294,6 +294,7 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 				continue
 			}
 			var cliOpts []providers.ClaudeCLIOption
+			cliOpts = append(cliOpts, providers.WithClaudeCLIName(p.Name))
 			cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true))
 			if gatewayAddr != "" {
 				mcpData := providers.BuildCLIMCPConfigData(nil, gatewayAddr, gatewayToken)
@@ -341,6 +342,7 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 			registry.RegisterForTenant(p.TenantID, codex)
 		case store.ProviderAnthropicNative:
 			registry.RegisterForTenant(p.TenantID, providers.NewAnthropicProvider(p.APIKey,
+				providers.WithAnthropicName(p.Name),
 				providers.WithAnthropicBaseURL(p.APIBase)))
 		case store.ProviderDashScope:
 			registry.RegisterForTenant(p.TenantID, providers.NewDashScopeProvider(p.Name, p.APIKey, p.APIBase, ""))
@@ -483,6 +485,7 @@ func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData) {
 	}
 	registry.RegisterForTenant(p.TenantID, providers.NewACPProvider(
 		binary, settings.Args, workDir, idleTTL, tools.DefaultDenyPatterns(),
+		providers.WithACPName(p.Name),
 		providers.WithACPModel(p.Name),
 	))
 	slog.Info("registered provider from DB", "name", p.Name, "type", "acp")
