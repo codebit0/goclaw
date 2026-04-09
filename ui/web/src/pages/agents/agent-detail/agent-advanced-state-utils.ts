@@ -117,6 +117,7 @@ export interface BuildAdvancedUpdatePayloadParams {
   thinkingLevel: string;
   chatgptRouting: ChatGPTOAuthRoutingConfig;
   wsSharing: WorkspaceSharingConfig;
+  browserUseProxy?: boolean;
   comp: CompactionConfig;
   pruneEnabled: boolean;
   prune: ContextPruningConfig;
@@ -130,7 +131,7 @@ export function buildAdvancedUpdatePayload(
   const {
     agent, currentProvider, providersLoading, providerModelsLoading,
     expertReasoningAvailable, reasoningMode, reasoningEffort, reasoningExpert,
-    reasoningFallback, thinkingLevel, chatgptRouting, wsSharing,
+    reasoningFallback, thinkingLevel, chatgptRouting, wsSharing, browserUseProxy,
     comp, pruneEnabled, prune, sbEnabled, sb,
   } = params;
 
@@ -180,6 +181,13 @@ export function buildAdvancedUpdatePayload(
     updates.workspace_sharing = wsSharing;
   } else {
     updates.workspace_sharing = null;
+  }
+
+  // browser_use_proxy: only set when true, remove otherwise
+  if (browserUseProxy) {
+    updates.browser_use_proxy = true;
+  } else {
+    updates.browser_use_proxy = null;
   }
 
   return updates;

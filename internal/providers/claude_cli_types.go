@@ -1,5 +1,7 @@
 package providers
 
+import "encoding/json"
+
 // Claude CLI JSON response types (internal).
 // These map to the output of `claude -p --output-format json/stream-json`.
 
@@ -36,9 +38,24 @@ type cliStreamMsg struct {
 	Content []cliContentBlock `json:"content"`
 }
 
-// cliContentBlock is a single content block (text, thinking, tool_use).
+// cliContentBlock is a single content block (text, thinking, tool_use, tool_result).
 type cliContentBlock struct {
 	Type     string `json:"type"`               // "text", "thinking", "tool_use", "tool_result"
 	Text     string `json:"text,omitempty"`     // for type="text"
 	Thinking string `json:"thinking,omitempty"` // for type="thinking"
+
+	// tool_use fields — parsed for tracing (CLI executes tools itself via MCP).
+	ToolID    string         `json:"id,omitempty"`    // tool call ID
+	ToolName  string         `json:"name,omitempty"`  // tool name
+	ToolInput map[string]any `json:"input,omitempty"` // tool arguments
+
+	// tool_result fields — content can be string (Text) or array of {type,text} objects.
+	ToolResultContent json.RawMessage `json:"content,omitempty"` // for type="tool_result"
+	IsError           bool            `json:"is_error,omitempty"`
+}
+
+// cliToolResultContent is the inner content of a tool_result block.
+type cliToolResultContent struct {
+	Type string `json:"type,omitempty"` // "text"
+	Text string `json:"text,omitempty"`
 }

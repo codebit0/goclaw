@@ -45,6 +45,10 @@ type RunContext struct {
 	SandboxCfg          *sandbox.Config
 	ShellDenyGroups     map[string]bool
 
+	// Browser
+	BrowserUseProxy bool
+	BrowserOpts     *BrowserOpts
+
 	// Workspace
 	Workspace        string
 	TeamWorkspace    string

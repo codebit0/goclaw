@@ -65,8 +65,8 @@ func (p *ClaudeCLIProvider) buildArgs(model, workDir, mcpConfigPath string, cliS
 		args = append(args, "--disallowedTools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,WebSearch,TodoRead,TodoWrite,NotebookRead,NotebookEdit")
 	}
 
-	if p.hooksSettingsPath != "" {
-		args = append(args, "--settings", p.hooksSettingsPath)
+	if settingsPath := p.ensureHooksSettings(); settingsPath != "" {
+		args = append(args, "--settings", settingsPath)
 	}
 
 	return args
@@ -160,13 +160,15 @@ func extractBoolOpt(opts map[string]any, key string) bool {
 // bridgeContextFromOpts builds a BridgeContext from the Options map.
 func bridgeContextFromOpts(opts map[string]any) BridgeContext {
 	return BridgeContext{
-		AgentID:   extractStringOpt(opts, OptAgentID),
-		UserID:    extractStringOpt(opts, OptUserID),
-		Channel:   extractStringOpt(opts, OptChannel),
-		ChatID:    extractStringOpt(opts, OptChatID),
-		PeerKind:  extractStringOpt(opts, OptPeerKind),
-		Workspace: extractStringOpt(opts, OptWorkspace),
-		TenantID:  extractStringOpt(opts, OptTenantID),
+		AgentID:       extractStringOpt(opts, OptAgentID),
+		AgentKey:      extractStringOpt(opts, OptAgentKey),
+		UserID:        extractStringOpt(opts, OptUserID),
+		Channel:       extractStringOpt(opts, OptChannel),
+		ChatID:        extractStringOpt(opts, OptChatID),
+		PeerKind:      extractStringOpt(opts, OptPeerKind),
+		Workspace:     extractStringOpt(opts, OptWorkspace),
+		TeamWorkspace: extractStringOpt(opts, OptTeamWorkspace),
+		TenantID:      extractStringOpt(opts, OptTenantID),
 	}
 }
 

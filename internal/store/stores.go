@@ -32,8 +32,13 @@ type Stores struct {
 	Tenants                TenantStore
 	BuiltinToolTenantCfgs  BuiltinToolTenantConfigStore
 	SkillTenantCfgs        SkillTenantConfigStore
-	SystemConfigs          SystemConfigStore
-	SubagentTasks          SubagentTaskStore
+	SystemConfigs             SystemConfigStore
+	BrowserProxies            BrowserProxyStore
+	BrowserProxyAssignments   BrowserProxyAssignmentStore
+	BrowserExtensions         BrowserExtensionStore
+	ScreencastSessions        ScreencastSessionStore
+	BrowserAudit              BrowserAuditStore
+	SubagentTasks             SubagentTaskStore
 	Vault                  VaultStore
 	Episodic               EpisodicStore
 	EvolutionMetrics       EvolutionMetricsStore

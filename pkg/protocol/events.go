@@ -105,6 +105,12 @@ const (
 
 	// Tenant access revocation — forces affected user's UI to logout.
 	EventTenantAccessRevoked = "tenant.access.revoked"
+
+	// Browser live view takeover events (sent to the UI client controlling the session).
+	// EventBrowserTakeoverRequest: agent requests human control (e.g. CAPTCHA, 2FA).
+	// EventBrowserTakeoverEnd: agent reclaims control after human interaction is done.
+	EventBrowserTakeoverRequest = "browser.takeover.request"
+	EventBrowserTakeoverEnd     = "browser.takeover.end"
 )
 
 // Agent event subtypes (in payload.type)

@@ -121,6 +121,9 @@ type Loop struct {
 	cacheInvalidate   CacheInvalidateFunc // invalidate context file cache after seeding
 	userSetups        sync.Map            // userID → *userSetup (workspace + seeding state, per Loop instance)
 
+	// Bridge trace registry: passes trace context to MCP bridge for CLI tool span attribution.
+	bridgeTraceReg *mcpbridge.BridgeTraceRegistry
+
 	// Per-user MCP tools: servers requiring user credentials get connected per-request.
 	mcpStore        store.MCPServerStore  // for credential lookup
 	mcpPool         *mcpbridge.Pool       // user-keyed connection pool
@@ -140,6 +143,10 @@ type Loop struct {
 
 	// Shell deny group overrides from agent other_config (nil = all defaults)
 	shellDenyGroups map[string]bool
+
+	// Browser: per-agent proxy opt-in (default false)
+	browserUseProxy bool
+	browserOpts     *store.BrowserOpts
 
 	// Event callback for broadcasting agent events (run.started, chunk, tool.call, etc.)
 	onEvent func(event AgentEvent)
@@ -287,6 +294,10 @@ type LoopConfig struct {
 	// Shell deny group overrides (nil = all defaults)
 	ShellDenyGroups map[string]bool
 
+	// Browser: per-agent proxy opt-in (default false — agent must explicitly enable)
+	BrowserUseProxy bool
+	BrowserOpts     *store.BrowserOpts
+
 	// Agent UUID + tenant for context propagation to tools
 	AgentUUID   uuid.UUID
 	TenantID    uuid.UUID // agent's owning tenant — injected into execution context
@@ -354,6 +365,9 @@ type LoopConfig struct {
 
 	// Memory store for extractive memory fallback (writes directly when LLM flush fails)
 	MemoryStore store.MemoryStore
+
+	// Bridge trace registry: passes trace context to MCP bridge for CLI tool span attribution.
+	BridgeTraceReg *mcpbridge.BridgeTraceRegistry
 
 	// Per-user MCP tools (servers requiring per-user credentials)
 	MCPStore        store.MCPServerStore  // for credential lookup
@@ -449,6 +463,8 @@ func NewLoop(cfg LoopConfig) *Loop {
 		sandboxContainerDir:    cfg.SandboxContainerDir,
 		sandboxWorkspaceAccess: cfg.SandboxWorkspaceAccess,
 		shellDenyGroups:        cfg.ShellDenyGroups,
+		browserUseProxy:       cfg.BrowserUseProxy,
+		browserOpts:           cfg.BrowserOpts,
 		traceCollector:         cfg.TraceCollector,
 		inputGuard:             guard,
 		injectionAction:        action,
@@ -470,6 +486,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		budgetMonthlyCents:     cfg.BudgetMonthlyCents,
 		tracingStore:           cfg.TracingStore,
 		memStore:               cfg.MemoryStore,
+		bridgeTraceReg:         cfg.BridgeTraceReg,
 		mcpStore:               cfg.MCPStore,
 		mcpPool:                cfg.MCPPool,
 		mcpUserCredSrvs:        cfg.MCPUserCredSrvs,

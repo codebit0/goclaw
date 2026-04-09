@@ -3,6 +3,8 @@ package agent
 import (
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
@@ -20,6 +22,23 @@ type indexedResult struct {
 	result       *tools.Result
 	argsJSON     string
 	spanStart    time.Time
+}
+
+// cliToolSpan tracks an in-flight tool span from CLI provider streaming.
+// CLI executes tools externally via MCP — GoClaw only observes tool_use/tool_result
+// events for tracing purposes.
+type cliToolSpan struct {
+	spanID uuid.UUID
+	start  time.Time
+	name   string
+}
+
+// truncateForEvent trims tool result text for event payloads.
+func truncateForEvent(s string) string {
+	if len(s) > 500 {
+		return s[:500] + "..."
+	}
+	return s
 }
 
 // resolveToolCallName strips the configured tool call prefix from a name

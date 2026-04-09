@@ -95,6 +95,9 @@ type ResolverDeps struct {
 	// Memory store for extractive memory fallback
 	MemoryStore store.MemoryStore
 
+	// Bridge trace registry for CLI tool span attribution
+	BridgeTraceReg *mcpbridge.BridgeTraceRegistry
+
 	// V3 evolution metrics store
 	EvolutionMetricsStore store.EvolutionMetricsStore
 
@@ -456,6 +459,8 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			SkillNudgeInterval:     ag.ParseSkillNudgeInterval(),
 			WorkspaceSharing:       ag.ParseWorkspaceSharing(),
 			ShellDenyGroups:        ag.ParseShellDenyGroups(),
+			BrowserUseProxy:       ag.ParseBrowserUseProxy(),
+			BrowserOpts:           parseBrowserOptsPtr(ag),
 			ConfigPermStore:        deps.ConfigPermStore,
 			TeamStore:              deps.TeamStore,
 			SecureCLIStore:         deps.SecureCLIStore,
@@ -464,6 +469,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			BudgetMonthlyCents:     derefInt(ag.BudgetMonthlyCents),
 			TracingStore:           deps.TracingStore,
 			MemoryStore:            deps.MemoryStore,
+			BridgeTraceReg:         deps.BridgeTraceReg,
 			MCPStore:               deps.MCPStore,
 			MCPPool:                deps.MCPPool,
 			MCPUserCredSrvs:        mcpUserCredSrvs,
@@ -473,9 +479,19 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			UserResolver:           newContactResolver(deps.ContactStore),
 		})
 
-		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)
+		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider,
+			"browserUseProxy", ag.ParseBrowserUseProxy(), "otherConfigLen", len(ag.OtherConfig))
 		return loop, nil
 	}
+}
+
+// parseBrowserOptsPtr returns a pointer to BrowserOpts if non-zero fields exist.
+func parseBrowserOptsPtr(ag *store.AgentData) *store.BrowserOpts {
+	opts := ag.ParseBrowserOpts()
+	if len(opts.LaunchArgs) == 0 && opts.WindowWidth == 0 && opts.WindowHeight == 0 {
+		return nil
+	}
+	return &opts
 }
 
 // InvalidateAgent removes an agent from the router cache, forcing re-resolution.

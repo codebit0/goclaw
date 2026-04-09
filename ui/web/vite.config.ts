@@ -31,6 +31,21 @@ export default defineConfig(({ mode }) => {
           target: `http://${backendHost}:${backendPort}`,
           changeOrigin: true,
         },
+        // All /browser/* API + WS endpoints proxied to backend.
+        // Exception: GET /browser/live/{token} (SPA page) handled by React Router.
+        "/browser": {
+          target: `http://${backendHost}:${backendPort}`,
+          changeOrigin: true,
+          ws: true,
+          bypass(req) {
+            const p = req.url || "";
+            // Let React SPA handle the live view HTML page (GET /browser/live/{token} without /ws or /info suffix)
+            if (req.method === "GET" && p.match(/^\/browser\/live\/[^/]+$/) && !p.endsWith("/ws") && !p.endsWith("/info")) {
+              return req.url;
+            }
+            return undefined; // proxy everything else
+          },
+        },
       },
     },
     build: {

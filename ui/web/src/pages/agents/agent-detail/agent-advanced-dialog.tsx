@@ -13,7 +13,7 @@ import type {
 } from "@/types/agent";
 import {
   ChatGPTOAuthRoutingSection, ThinkingSection, WorkspaceSharingSection, CompactionSection,
-  ContextPruningSection, SandboxSection,
+  ContextPruningSection, SandboxSection, BrowserProxySection,
 } from "./config-sections";
 import { WorkspaceSection } from "./general-sections";
 import { useProviders } from "@/pages/providers/hooks/use-providers";
@@ -48,7 +48,9 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
   const expertReasoningAvailable = Boolean(currentModelCapability?.levels?.length);
 
   const init = deriveState(agent, currentProvider);
+  const otherObj = (agent.other_config as Record<string, unknown> | null) ?? {};
   const [wsSharing, setWsSharing] = useState<WorkspaceSharingConfig>(init.wsSharing);
+  const [browserUseProxy, setBrowserUseProxy] = useState(otherObj.browser_use_proxy === true);
   const [reasoningMode, setReasoningMode] = useState<ReasoningOverrideMode>(init.reasoningMode);
   const [thinkingLevel, setThinkingLevel] = useState(init.thinkingLevel);
   const [reasoningEffort, setReasoningEffort] = useState(init.reasoningEffort);
@@ -66,6 +68,8 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
     if (!open) return;
     refreshProviders();
     const s = deriveState(agent, currentProvider);
+    const otherCfg = (agent.other_config as Record<string, unknown> | null) ?? {};
+    setBrowserUseProxy(otherCfg.browser_use_proxy === true);
     setReasoningMode(s.reasoningMode);
     setThinkingLevel(s.thinkingLevel);
     setReasoningEffort(s.reasoningEffort);
@@ -125,6 +129,7 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
         thinkingLevel,
         chatgptRouting,
         wsSharing,
+        browserUseProxy,
         comp,
         pruneEnabled,
         prune,
@@ -157,6 +162,9 @@ export function AgentAdvancedDialog({ open, onOpenChange, agent, onUpdate }: Age
 
           {/* Workspace Sharing */}
           <WorkspaceSharingSection value={wsSharing} onChange={setWsSharing} />
+
+          {/* Browser Proxy */}
+          <BrowserProxySection value={browserUseProxy} onChange={setBrowserUseProxy} />
 
           {/* Thinking */}
           <ThinkingSection

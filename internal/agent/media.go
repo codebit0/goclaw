@@ -14,6 +14,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/media"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
+	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 // maxImageBytes is the safety limit for reading image files (10MB).
@@ -28,21 +29,22 @@ func loadImages(files []bus.MediaFile) []providers.ImageContent {
 
 	var images []providers.ImageContent
 	for _, f := range files {
+		p := tools.SanitizeMediaPath(f.Path)
 		mime := f.MimeType
 		if mime == "" {
-			mime = inferImageMime(f.Path)
+			mime = inferImageMime(p)
 		}
 		if !strings.HasPrefix(mime, "image/") {
 			continue
 		}
 
-		data, err := os.ReadFile(f.Path)
+		data, err := os.ReadFile(p)
 		if err != nil {
-			slog.Warn("vision: failed to read image file", "path", f.Path, "error", err)
+			slog.Warn("vision: failed to read image file", "path", p, "error", err)
 			continue
 		}
 		if len(data) > maxImageBytes {
-			slog.Warn("vision: image file too large, skipping", "path", f.Path, "size", len(data))
+			slog.Warn("vision: image file too large, skipping", "path", p, "size", len(data))
 			continue
 		}
 

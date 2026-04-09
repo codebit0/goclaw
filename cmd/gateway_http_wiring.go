@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"log/slog"
+	"os"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
+	"github.com/nextlevelbuilder/goclaw/pkg/browser"
 )
 
 // httpHandlers bundles the results of wireHTTP() for passing to wireHTTPHandlersOnServer.
@@ -204,11 +206,37 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 		d.server.SetMediaServeHandler(httpapi.NewMediaServeHandler(mediaStore))
 	}
 
+	// Browser live view handler
+	if d.browserMgr != nil && d.pgStores.ScreencastSessions != nil {
+		d.browserLiveH = httpapi.NewBrowserLiveHandler(d.pgStores.ScreencastSessions, d.browserMgr, nil)
+		d.server.SetBrowserLiveHandler(d.browserLiveH)
+		// Wire sessions store + public URL into browser tool for liveview.create token generation
+		if bt, ok := d.toolsReg.Get("browser"); ok {
+			if browserTool, ok := bt.(*browser.BrowserTool); ok {
+				browserTool.SetScreencastSessions(d.pgStores.ScreencastSessions)
+				if u := d.cfg.Tools.Browser.PublicURL; u != "" {
+					browserTool.SetPublicURL(u)
+				}
+			}
+		}
+	}
+
+	// Browser proxy pool management handler
+	if d.pgStores.BrowserProxies != nil {
+		encKey := os.Getenv("GOCLAW_ENCRYPTION_KEY")
+		httpProxyMgr := browser.NewProxyManager(d.pgStores.BrowserProxies, encKey, nil)
+		if d.pgStores.BrowserProxyAssignments != nil {
+			httpProxyMgr.SetAssignmentStore(d.pgStores.BrowserProxyAssignments)
+		}
+		d.server.SetBrowserProxiesHandler(httpapi.NewBrowserProxiesHandler(httpProxyMgr, nil))
+	}
+
 	// Seed + apply builtin tool disables
 	if d.pgStores.BuiltinTools != nil {
 		seedBuiltinTools(context.Background(), d.pgStores.BuiltinTools)
 		migrateBuiltinToolSettings(context.Background(), d.pgStores.BuiltinTools)
 		backfillWebFetchSettings(context.Background(), d.pgStores.BuiltinTools)
+		backfillBrowserSettings(context.Background(), d.pgStores.BuiltinTools, d.cfg.Tools.Browser.PublicURL)
 		applyBuiltinToolDisables(context.Background(), d.pgStores.BuiltinTools, d.toolsReg)
 	}
 }

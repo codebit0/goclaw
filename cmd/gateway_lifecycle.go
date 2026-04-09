@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tasks"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
+	"github.com/nextlevelbuilder/goclaw/pkg/browser"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
@@ -104,6 +106,65 @@ func (d *gatewayDeps) runLifecycle(
 		}
 		deps.ttsTool.UpdateManager(newMgr)
 		slog.Info("tts config reloaded", "provider", newMgr.PrimaryProvider(), "auto", string(newMgr.AutoMode()))
+	})
+
+	// Reload browser manager on config changes via pub/sub.
+	// Only rebuilds when the browser config section actually changed.
+	var lastBrowserCfgJSON []byte // tracks serialized browser config for change detection
+	if d.cfg.Tools.Browser.Enabled {
+		lastBrowserCfgJSON, _ = json.Marshal(d.cfg.Tools.Browser)
+	}
+	d.msgBus.Subscribe("browser-config-reload", func(evt bus.Event) {
+		if evt.Name != bus.TopicConfigChanged {
+			return
+		}
+		updatedCfg, ok := evt.Payload.(*config.Config)
+		if !ok {
+			return
+		}
+
+		// Skip reload if browser config hasn't changed
+		newCfgJSON, _ := json.Marshal(updatedCfg.Tools.Browser)
+		if string(newCfgJSON) == string(lastBrowserCfgJSON) {
+			return
+		}
+		lastBrowserCfgJSON = newCfgJSON
+
+		bt, hasBT := d.toolsReg.Get("browser")
+		if !hasBT {
+			return
+		}
+		browserTool, ok := bt.(*browser.BrowserTool)
+		if !ok {
+			return
+		}
+		oldMgr := browserTool.Manager()
+
+		// Build new manager from updated config (reuses setupToolRegistry logic)
+		newMgr := buildBrowserManager(updatedCfg, d.workspace)
+		if newMgr == nil {
+			// Browser disabled — stop old manager
+			if oldMgr != nil {
+				oldMgr.Close()
+			}
+			slog.Info("browser disabled via config reload")
+			return
+		}
+
+		// Stop old manager (cleans up containers, Chrome processes, etc.)
+		if oldMgr != nil {
+			oldMgr.Close()
+		}
+
+		// Swap manager in BrowserTool + BrowserLiveHandler
+		browserTool.SetManager(newMgr)
+		if d.browserLiveH != nil {
+			d.browserLiveH.SetManager(newMgr)
+		}
+		// Update the outer browserMgr reference for defer Close()
+		d.browserMgr = newMgr
+
+		slog.Info("browser config reloaded", "mode", updatedCfg.Tools.Browser.Mode)
 	})
 
 	// Log orphaned providers on agent deletion. Auto-delete is unsafe because

@@ -7,12 +7,17 @@ import (
 	"mime"
 	"path/filepath"
 	"strings"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
+	"github.com/nextlevelbuilder/goclaw/internal/tracing"
 )
 
 // BridgeToolNames is the subset of GoClaw tools exposed via the MCP bridge.
@@ -60,11 +65,14 @@ func NewBridgeServer(reg *tools.Registry, version string, msgBus *bus.MessageBus
 		mcpserver.WithToolCapabilities(false),
 	)
 
-	// Register each safe tool from the GoClaw registry
+	// Register each safe tool from the GoClaw registry.
+	// Use GetAny so admin-disabled tools are still reachable via the bridge
+	// (the Claude CLI subprocess needs access regardless of UI toggles).
 	var registered int
 	for name := range BridgeToolNames {
-		t, ok := reg.Get(name)
+		t, ok := reg.GetAny(name)
 		if !ok {
+			slog.Debug("mcp.bridge: tool not found in registry, skipping", "tool", name)
 			continue
 		}
 
@@ -72,6 +80,7 @@ func NewBridgeServer(reg *tools.Registry, version string, msgBus *bus.MessageBus
 		handler := makeToolHandler(reg, name, msgBus)
 		srv.AddTool(mcpTool, handler)
 		registered++
+		slog.Debug("mcp.bridge: registered tool", "tool", name)
 	}
 
 	slog.Info("mcp.bridge: tools registered", "count", registered)
@@ -94,13 +103,24 @@ func convertToMCPTool(t tools.Tool) mcpgo.Tool {
 // makeToolHandler creates a ToolHandlerFunc that delegates to the GoClaw tool registry.
 // When msgBus is non-nil and a tool result contains Media paths, the handler publishes
 // them as outbound media attachments so files reach the user (e.g. Telegram document).
+// When trace context is present (injected by bridgeContextMiddleware), tool spans are
+// emitted so bridge tool calls appear in the trace timeline alongside native tool calls.
 func makeToolHandler(reg *tools.Registry, toolName string, msgBus *bus.MessageBus) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		args := req.GetArguments()
 
+		// Emit "running" span before execution so the span appears even if the tool panics.
+		start := time.Now().UTC()
+		argsJSON, _ := json.Marshal(args)
+		spanID := emitBridgeToolSpanStart(ctx, start, toolName, string(argsJSON))
+
 		result := reg.Execute(ctx, toolName, args)
 
+		// Finalize span with result.
+		emitBridgeToolSpanEnd(ctx, spanID, start, result)
+
 		if result.IsError {
+			slog.Debug("mcp.bridge: tool error", "tool", toolName, "error", result.ForLLM)
 			return mcpgo.NewToolResultError(result.ForLLM), nil
 		}
 
@@ -111,6 +131,78 @@ func makeToolHandler(reg *tools.Registry, toolName string, msgBus *bus.MessageBu
 
 		return mcpgo.NewToolResultText(result.ForLLM), nil
 	}
+}
+
+// emitBridgeToolSpanStart emits a "running" tool span for a bridge tool call.
+// Returns the span ID so emitBridgeToolSpanEnd can finalize it.
+func emitBridgeToolSpanStart(ctx context.Context, start time.Time, toolName, input string) uuid.UUID {
+	collector := tracing.CollectorFromContext(ctx)
+	traceID := tracing.TraceIDFromContext(ctx)
+	if collector == nil || traceID == uuid.Nil {
+		return uuid.Nil
+	}
+
+	spanID := store.GenNewID()
+	span := store.SpanData{
+		ID:           spanID,
+		TraceID:      traceID,
+		SpanType:     store.SpanTypeToolCall,
+		Name:         toolName,
+		StartTime:    start,
+		ToolName:     toolName,
+		InputPreview: tracing.TruncateJSON(input, 500),
+		Status:       store.SpanStatusRunning,
+		Level:        store.SpanLevelDefault,
+		CreatedAt:    start,
+	}
+	if parentID := tracing.ParentSpanIDFromContext(ctx); parentID != uuid.Nil {
+		span.ParentSpanID = &parentID
+	}
+	if agentID := bridgeAgentIDFromContext(ctx); agentID != uuid.Nil {
+		span.AgentID = &agentID
+	}
+	span.TenantID = store.TenantIDFromContext(ctx)
+	if span.TenantID == uuid.Nil {
+		span.TenantID = store.MasterTenantID
+	}
+
+	collector.EmitSpan(span)
+	return spanID
+}
+
+// emitBridgeToolSpanEnd finalizes a bridge tool span with execution results.
+func emitBridgeToolSpanEnd(ctx context.Context, spanID uuid.UUID, start time.Time, result *tools.Result) {
+	if spanID == uuid.Nil {
+		return
+	}
+	collector := tracing.CollectorFromContext(ctx)
+	traceID := tracing.TraceIDFromContext(ctx)
+	if collector == nil || traceID == uuid.Nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	preview := result.ForLLM
+	if len(preview) > 500 {
+		preview = preview[:500]
+	}
+
+	updates := map[string]any{
+		"end_time":       now,
+		"duration_ms":    int(now.Sub(start).Milliseconds()),
+		"status":         store.SpanStatusCompleted,
+		"output_preview": preview,
+	}
+	if result.IsError {
+		updates["status"] = store.SpanStatusError
+		errMsg := result.ForLLM
+		if len(errMsg) > 200 {
+			errMsg = errMsg[:200]
+		}
+		updates["error"] = errMsg
+	}
+
+	collector.EmitSpanUpdate(spanID, traceID, updates)
 }
 
 // forwardMediaToOutbound publishes media files from a tool result to the outbound bus.

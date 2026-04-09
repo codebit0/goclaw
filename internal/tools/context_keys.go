@@ -618,3 +618,26 @@ func SandboxConfigFromCtx(ctx context.Context) *sandbox.Config {
 	}
 	return nil
 }
+
+// --- Per-agent browser opts (proxy opt-in, launch args, viewport) ---
+
+const ctxBrowserOpts toolContextKey = "tool_browser_opts"
+
+// WithBrowserOptsCtx injects per-agent browser options into context.
+func WithBrowserOptsCtx(ctx context.Context, opts *store.BrowserOpts) context.Context {
+	return context.WithValue(ctx, ctxBrowserOpts, opts)
+}
+
+// BrowserOptsFromCtx returns per-agent browser options from context, or nil.
+func BrowserOptsFromCtx(ctx context.Context) *store.BrowserOpts {
+	v, _ := ctx.Value(ctxBrowserOpts).(*store.BrowserOpts)
+	return v
+}
+
+// BrowserUseProxyFromCtx returns whether the agent has opted in to proxy pool assignment.
+func BrowserUseProxyFromCtx(ctx context.Context) bool {
+	if opts := BrowserOptsFromCtx(ctx); opts != nil {
+		return opts.UseProxy
+	}
+	return false
+}

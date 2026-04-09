@@ -98,6 +98,18 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if l.shellDenyGroups != nil {
 		ctx = store.WithShellDenyGroups(ctx, l.shellDenyGroups)
 	}
+	// Inject per-agent browser opts (proxy opt-in, launch args, viewport)
+	slog.Debug("injectContext browserUseProxy", "agent", l.id, "browserUseProxy", l.browserUseProxy)
+	if l.browserUseProxy || l.browserOpts != nil {
+		opts := l.browserOpts
+		if opts == nil {
+			opts = &store.BrowserOpts{}
+		}
+		if l.browserUseProxy {
+			opts.UseProxy = true
+		}
+		ctx = tools.WithBrowserOptsCtx(ctx, opts)
+	}
 
 	// Workspace scope propagation (delegation origin → workspace tools).
 	if req.WorkspaceChannel != "" {
@@ -307,6 +319,8 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		MemoryCfg:           l.memoryCfg,
 		SandboxCfg:          l.sandboxCfg,
 		ShellDenyGroups:     l.shellDenyGroups,
+		BrowserUseProxy:    l.browserUseProxy,
+		BrowserOpts:        l.browserOpts,
 		Workspace:           tools.ToolWorkspaceFromCtx(ctx),
 		TeamWorkspace:       tools.ToolTeamWorkspaceFromCtx(ctx),
 		TeamID:              tools.ToolTeamIDFromCtx(ctx),

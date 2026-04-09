@@ -13,7 +13,10 @@ import type { BuiltinToolData } from "./hooks/use-builtin-tools";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+const ALWAYS_EDITABLE = new Set(["browser"]);
+
 export function hasEditableSettings(tool: BuiltinToolData): boolean {
+  if (ALWAYS_EDITABLE.has(tool.name)) return true;
   return tool.settings != null && Object.keys(tool.settings).length > 0;
 }
 

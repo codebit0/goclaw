@@ -25,6 +25,8 @@
     "memory": "Memory",
     "vault": "Vault",
     "knowledgeGraph": "Knowledge Graph",
+    "browser": "Browser",
+    "proxyPool": "Proxy Pool",
     "traces": "Traces",
     "realtimeEvents": "Realtime Events",
     "usage": "Usage",

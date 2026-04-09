@@ -139,6 +139,14 @@ func parseSingleJSONResult(line []byte) *ChatResponse {
 
 // extractStreamContent extracts text and thinking from a stream message.
 func extractStreamContent(msg *cliStreamMsg) (text, thinking string) {
+	text, thinking, _ = extractStreamContentWithTools(msg)
+	return
+}
+
+// extractStreamContentWithTools extracts text, thinking, and tool call/result chunks
+// from a CLI stream message. Tool chunks are emitted for tracing — CLI executes tools
+// itself via MCP, but GoClaw needs visibility for the trace timeline.
+func extractStreamContentWithTools(msg *cliStreamMsg) (text, thinking string, toolChunks []StreamChunk) {
 	var textBuf, thinkBuf strings.Builder
 	for _, block := range msg.Content {
 		switch block.Type {
@@ -146,7 +154,44 @@ func extractStreamContent(msg *cliStreamMsg) (text, thinking string) {
 			textBuf.WriteString(block.Text)
 		case "thinking":
 			thinkBuf.WriteString(block.Thinking)
+		case "tool_use":
+			if block.ToolName != "" {
+				toolChunks = append(toolChunks, StreamChunk{
+					ToolCallID: block.ToolID,
+					ToolName:   block.ToolName,
+					ToolInput:  block.ToolInput,
+				})
+			}
+		case "tool_result":
+			// tool_result content can be a string (Text) or array of {type,text} objects (ToolResultContent).
+			if block.ToolID != "" {
+				tc := StreamChunk{ToolCallID: block.ToolID, ToolIsError: block.IsError}
+				switch {
+				case block.Text != "":
+					tc.ToolResult = block.Text
+				case len(block.ToolResultContent) > 0:
+					// Try as string first
+					var s string
+					if json.Unmarshal(block.ToolResultContent, &s) == nil {
+						tc.ToolResult = s
+					} else {
+						// Array of {type, text} objects
+						var parts []cliToolResultContent
+						if json.Unmarshal(block.ToolResultContent, &parts) == nil {
+							var buf strings.Builder
+							for _, p := range parts {
+								buf.WriteString(p.Text)
+							}
+							tc.ToolResult = buf.String()
+						}
+					}
+				}
+				if tc.ToolResult == "" {
+					tc.ToolResult = "(empty)"
+				}
+				toolChunks = append(toolChunks, tc)
+			}
 		}
 	}
-	return textBuf.String(), thinkBuf.String()
+	return textBuf.String(), thinkBuf.String(), toolChunks
 }

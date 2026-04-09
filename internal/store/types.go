@@ -45,3 +45,12 @@ type StoreConfig struct {
 	// If empty, sensitive data is stored in plain text.
 	EncryptionKey string
 }
+
+// BrowserOpts holds per-agent browser configuration injected via context.
+// Used by the browser tool to customize browser launch args and viewport per agent.
+type BrowserOpts struct {
+	LaunchArgs   []string `json:"browser_launch_args,omitempty"`
+	WindowWidth  int      `json:"browser_window_width,omitempty"`
+	WindowHeight int      `json:"browser_window_height,omitempty"`
+	UseProxy     bool     `json:"browser_use_proxy,omitempty"`
+}

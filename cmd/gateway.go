@@ -41,6 +41,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 	"github.com/nextlevelbuilder/goclaw/internal/vault"
+	"github.com/nextlevelbuilder/goclaw/pkg/browser"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
@@ -148,6 +149,29 @@ func runGateway() {
 	}
 	if snapshotWorker != nil {
 		defer snapshotWorker.Stop()
+	}
+
+	// Wire browser managers (proxy, extension, audit) now that PG stores are available.
+	if browserMgr != nil {
+		if bt, ok := toolsReg.Get("browser"); ok {
+			if browserTool, ok := bt.(*browser.BrowserTool); ok {
+				encKey := os.Getenv("GOCLAW_ENCRYPTION_KEY")
+				if pgStores.BrowserProxies != nil {
+					pm := browser.NewProxyManager(pgStores.BrowserProxies, encKey, nil)
+					if pgStores.BrowserProxyAssignments != nil {
+						pm.SetAssignmentStore(pgStores.BrowserProxyAssignments)
+					}
+					browserTool.SetProxyManager(pm)
+					browserMgr.SetProxyManager(pm, store.MasterTenantID.String())
+				}
+				if pgStores.BrowserExtensions != nil {
+					browserTool.SetExtensionManager(browser.NewExtensionManager(pgStores.BrowserExtensions, nil))
+				}
+				if pgStores.BrowserAudit != nil && cfg.Tools.Browser.AuditEnabled {
+					browserTool.SetAuditLogger(browser.NewAuditLogger(pgStores.BrowserAudit, nil))
+				}
+			}
+		}
 	}
 
 	// Redis cache: compiled via build tags. Build with 'go build -tags redis' to enable.
@@ -269,6 +293,9 @@ func runGateway() {
 	server.SetPolicyEngine(permPE)
 	server.SetPairingService(pgStores.Pairing)
 	server.SetMessageBus(msgBus)
+	server.SetBuiltinToolStore(pgStores.BuiltinTools)
+	bridgeTraceReg := mcpbridge.NewBridgeTraceRegistry()
+	server.SetBridgeTraceRegistry(bridgeTraceReg)
 	server.SetOAuthHandler(httpapi.NewOAuthHandler(pgStores.Providers, pgStores.ConfigSecrets, providerRegistry, msgBus))
 
 	// contextFileInterceptor is created inside wireExtras.
@@ -284,7 +311,7 @@ func runGateway() {
 	var mcpPool *mcpbridge.Pool
 	var mediaStore *media.Store
 	var postTurn tools.PostTurnProcessor
-	contextFileInterceptor, mcpPool, mediaStore, postTurn = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, redisClient, domainBus)
+	contextFileInterceptor, mcpPool, mediaStore, postTurn = wireExtras(pgStores, agentRouter, providerRegistry, msgBus, pgStores.Sessions, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, redisClient, bridgeTraceReg, domainBus)
 	if mcpPool != nil {
 		defer mcpPool.Stop()
 	}
@@ -301,6 +328,7 @@ func runGateway() {
 		skillsLoader:     skillsLoader,
 		workspace:        workspace,
 		dataDir:          dataDir,
+		browserMgr:       browserMgr,
 	}
 
 	gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
