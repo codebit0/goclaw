@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -169,5 +170,74 @@ func TestRouterGet_DualTenantSameAgentKey(t *testing.T) {
 	}
 	if !existsB {
 		t.Errorf("tenantB cache entry %q missing", keyB)
+	}
+}
+
+// TestRouterGet_CanonicalDoubleCheckEvictsStaleEntry pins the TTL check inside
+// the canonical double-check branch. Scenario: an earlier caller wrote the
+// canonical entry, TTL expires, a UUID-form caller arrives. The raw UUID key
+// is not in the map so the initial-miss eviction branch does nothing; the
+// resolver runs and the canonical double-check finds the stale entry. Without
+// the TTL re-check this would return the stale agent indefinitely — only
+// InvalidateAgent could rescue it. The fix evicts + rewrites.
+func TestRouterGet_CanonicalDoubleCheckEvictsStaleEntry(t *testing.T) {
+	r := NewRouter()
+
+	var resolveCount atomic.Int32
+	calls := 0
+	r.SetResolver(func(_ context.Context, _ string) (Agent, error) {
+		resolveCount.Add(1)
+		calls++
+		return &stubAgent{id: "goctech-leader", running: calls == 1}, nil
+	})
+
+	tenantID := uuid.New()
+	ctx := store.WithTenantID(context.Background(), tenantID)
+	canonicalKey := tenantID.String() + ":goctech-leader"
+
+	// Prime canonical entry with agent_key caller.
+	if _, err := r.Get(ctx, "goctech-leader"); err != nil {
+		t.Fatalf("initial Get(agent_key): %v", err)
+	}
+	if got := resolveCount.Load(); got != 1 {
+		t.Fatalf("resolver calls after prime = %d, want 1", got)
+	}
+
+	// Force the canonical entry to look stale (cachedAt far past TTL).
+	r.mu.Lock()
+	entry, ok := r.agents[canonicalKey]
+	if !ok {
+		r.mu.Unlock()
+		t.Fatalf("canonical entry %q missing after prime", canonicalKey)
+	}
+	entry.cachedAt = time.Now().Add(-2 * defaultRouterTTL)
+	r.mu.Unlock()
+
+	// UUID-form caller arrives. Initial miss branch does nothing (raw UUID key
+	// was never written). Resolver runs. Canonical double-check must detect the
+	// stale entry and evict+rewrite, not return it.
+	uuidInput := uuid.New().String()
+	got, err := r.Get(ctx, uuidInput)
+	if err != nil {
+		t.Fatalf("Get(uuid) after stale prime: %v", err)
+	}
+	if resolveCount.Load() != 2 {
+		t.Errorf("resolver calls after stale Get = %d, want 2", resolveCount.Load())
+	}
+	if got.IsRunning() {
+		// The stale entry had running=true (calls==1). The fresh resolver return
+		// has running=false (calls==2). If IsRunning is true we got the stale one.
+		t.Errorf("Get returned stale entry (running=true) instead of fresh resolver result")
+	}
+
+	// Canonical entry must now hold a fresh cachedAt.
+	r.mu.RLock()
+	fresh, ok := r.agents[canonicalKey]
+	r.mu.RUnlock()
+	if !ok {
+		t.Fatalf("canonical entry %q missing after stale refresh", canonicalKey)
+	}
+	if time.Since(fresh.cachedAt) > time.Second {
+		t.Errorf("canonical entry cachedAt not refreshed: age = %v", time.Since(fresh.cachedAt))
 	}
 }

@@ -106,10 +106,16 @@ func (r *Router) Get(ctx context.Context, agentID string) (Agent, error) {
 		// entries exist for the same logical agent.
 		canonicalKey := agentCacheKey(ctx, ag.ID())
 		r.mu.Lock()
-		// Double-check: another goroutine might have created it under the canonical key
+		// Double-check: another goroutine might have created it under the canonical key.
+		// Re-check TTL so a UUID-form caller cannot receive a stale canonical entry
+		// indefinitely — this branch is the only eviction path for entries the caller
+		// never wrote under the raw input key.
 		if existing, ok := r.agents[canonicalKey]; ok {
-			r.mu.Unlock()
-			return existing.agent, nil
+			if r.ttl == 0 || time.Since(existing.cachedAt) < r.ttl {
+				r.mu.Unlock()
+				return existing.agent, nil
+			}
+			delete(r.agents, canonicalKey)
 		}
 		r.agents[canonicalKey] = &agentEntry{agent: ag, cachedAt: time.Now()}
 		r.mu.Unlock()
