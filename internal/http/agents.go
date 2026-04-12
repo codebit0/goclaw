@@ -347,14 +347,13 @@ func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only owner can update
+	// Tenant admins can update any agent in their tenant (adminMiddleware already
+	// verified RoleAdmin). System owners can update any agent across tenants.
+	// GetByID respects tenant scoping from context, so if the agent is returned
+	// it belongs to the caller's tenant.
 	ag, err := h.agents.GetByID(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, protocol.ErrNotFound, i18n.T(locale, i18n.MsgNotFound, "agent", id.String()))
-		return
-	}
-	if userID != "" && ag.OwnerID != userID && !h.isOwnerUser(userID) {
-		writeError(w, http.StatusForbidden, protocol.ErrUnauthorized, i18n.T(locale, i18n.MsgOwnerOnly, "update agent"))
 		return
 	}
 
@@ -426,8 +425,9 @@ func (h *AgentsHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.agents.Update(r.Context(), id, allowed); err != nil {
-		slog.Error("agents.update", "id", id, "error", err)
-		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, i18n.T(locale, i18n.MsgFailedToUpdate, "agent", "internal error"))
+		slog.Error("agents.update", "id", id, "user_id", userID,
+			"tenant_id", store.TenantIDFromContext(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, protocol.ErrInternal, i18n.T(locale, i18n.MsgFailedToUpdate, "agent", err.Error()))
 		return
 	}
 
