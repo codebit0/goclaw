@@ -70,6 +70,15 @@ type NewSessionResponse struct {
 	SessionID string `json:"sessionId"`
 }
 
+type LoadSessionRequest struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd,omitempty"`
+}
+
+type LoadSessionResponse struct {
+	SessionID string `json:"sessionId"`
+}
+
 type PromptRequest struct {
 	SessionID string         `json:"sessionId"`
 	Prompt    []ContentBlock `json:"prompt"`
