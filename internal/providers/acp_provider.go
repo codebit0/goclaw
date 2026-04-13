@@ -103,7 +103,7 @@ func (p *ACPProvider) Capabilities() ProviderCapabilities {
 func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	sessionKey := extractStringOpt(req.Options, OptSessionKey)
 	if sessionKey == "" {
-		return nil, fmt.Errorf("acp: session_key required in options")
+		sessionKey = fmt.Sprintf("temp-%d", time.Now().UnixNano())
 	}
 
 	unlock := p.lockSession(sessionKey)
@@ -145,7 +145,7 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk func(StreamChunk)) (*ChatResponse, error) {
 	sessionKey := extractStringOpt(req.Options, OptSessionKey)
 	if sessionKey == "" {
-		return nil, fmt.Errorf("acp: session_key required in options")
+		sessionKey = fmt.Sprintf("temp-%d", time.Now().UnixNano())
 	}
 
 	unlock := p.lockSession(sessionKey)

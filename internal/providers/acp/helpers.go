@@ -10,7 +10,7 @@ import (
 var sensitiveEnvPrefixes = []string{
 	"GOCLAW", "CLAUDE", "ANTHROPIC", "OPENAI",
 	"DATABASE", "POSTGRES", "MYSQL", "REDIS", "MONGO",
-	"AWS_", "GOOGLE_", "AZURE_", "GCP_",
+	"AWS_", "AZURE_",
 	"GITHUB_", "GH_", "GITLAB_", "BITBUCKET_",
 	"DOCKER_", "REGISTRY_",
 	"STRIPE_", "TWILIO_", "SENDGRID_",

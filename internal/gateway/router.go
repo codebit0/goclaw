@@ -240,7 +240,7 @@ func (r *MethodRouter) handleConnect(ctx context.Context, client *Client, req *p
 		if paired {
 			client.role = permissions.RoleOperator
 			client.authenticated = true
-			client.userID = params.UserID
+		client.userID = params.UserID
 			client.pairedSenderID = params.SenderID
 			client.pairedChannel = "browser"
 			tid, errCode := r.resolveTenantHint(ctx, params.TenantHint, params.UserID)
@@ -282,7 +282,7 @@ func (r *MethodRouter) handleConnect(ctx context.Context, client *Client, req *p
 	// Path 4: Fallback → viewer (wrong token or pairing not available)
 	client.role = permissions.RoleViewer
 	client.authenticated = true
-	client.userID = params.UserID
+		client.userID = params.UserID
 	tid, errCode := r.resolveTenantHint(ctx, params.TenantHint, params.UserID)
 	if errCode != "" {
 		client.SendResponse(protocol.NewErrorResponse(req.ID, errCode, "tenant access revoked"))

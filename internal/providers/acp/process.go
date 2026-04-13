@@ -133,6 +133,7 @@ func (pp *ProcessPool) spawn(ctx context.Context, sessionKey string) (*ACPProces
 	// Capture stderr for diagnostics (capped via limitedWriter)
 	cmd.Stderr = &limitedWriter{max: 4096}
 
+	slog.Info("acp: starting subprocess", "binary", pp.agentBinary, "args", pp.agentArgs)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("acp: start %s: %w", pp.agentBinary, err)
@@ -172,10 +173,12 @@ func (pp *ProcessPool) spawn(ctx context.Context, sessionKey string) (*ACPProces
 	}()
 
 	// ACP handshake: initialize + session/new
+	slog.Info("acp: performing handshake (initialize)")
 	if err := proc.Initialize(ctx); err != nil {
 		cancel()
 		return nil, err
 	}
+	slog.Info("acp: performing handshake (session/new)")
 	if err := proc.NewSession(ctx); err != nil {
 		cancel()
 		return nil, err
