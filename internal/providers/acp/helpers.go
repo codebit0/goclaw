@@ -1,10 +1,29 @@
 package acp
 
 import (
+	"context"
 	"io"
 	"strings"
 	"sync"
 )
+
+// contextKey is the unexported type for context values set by this package.
+type contextKey string
+
+const goclawSessionCtxKey contextKey = "goclaw_session"
+
+// WithGoclawSession attaches the goclaw conversation session key to ctx so
+// that ACP-level logs can correlate the ACP session ID with the goclaw session.
+func WithGoclawSession(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, goclawSessionCtxKey, key)
+}
+
+// goclawSessionFromCtx extracts the goclaw session key injected by WithGoclawSession.
+// Returns "" if not set.
+func goclawSessionFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(goclawSessionCtxKey).(string)
+	return v
+}
 
 // sensitiveEnvPrefixes lists env var prefixes stripped from ACP subprocesses.
 var sensitiveEnvPrefixes = []string{
