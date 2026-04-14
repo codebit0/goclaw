@@ -42,7 +42,7 @@ type GitHubRelease struct {
 
 // releaseCacheEntry is a single cached release lookup.
 type releaseCacheEntry struct {
-	data      interface{}
+	data      any
 	expiresAt time.Time
 }
 
@@ -70,7 +70,7 @@ func NewGitHubClient(token string) *GitHubClient {
 	}
 }
 
-func (c *GitHubClient) cacheGet(key string) (interface{}, bool) {
+func (c *GitHubClient) cacheGet(key string) (any, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.cache[key]
@@ -85,7 +85,7 @@ func (c *GitHubClient) cacheGet(key string) (interface{}, bool) {
 // when many distinct repo queries land.
 const cacheMaxEntries = 256
 
-func (c *GitHubClient) cacheSet(key string, v interface{}) {
+func (c *GitHubClient) cacheSet(key string, v any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.cache) >= cacheMaxEntries {
@@ -149,9 +149,10 @@ func (c *GitHubClient) ListReleases(ctx context.Context, owner, repo string, lim
 }
 
 // doJSON performs a GET + JSON decode, mapping status codes to sentinel errors.
-func (c *GitHubClient) doJSON(ctx context.Context, path string, out interface{}) error {
-	url := c.BaseURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *GitHubClient) doJSON(ctx context.Context, path string, out any) error {
+	// Avoid shadowing the "net/url" package import used elsewhere in this file.
+	apiURL := c.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return err
 	}

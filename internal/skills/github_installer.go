@@ -340,7 +340,9 @@ func pickBinaries(files []ArchiveFile, repoName string) []ArchiveFile {
 		return named
 	}
 
-	// Otherwise: top-level executables (no intermediate dir beyond a single release dir).
+	// Otherwise: any executable-looking entry that survived the nonBinaryPathRE
+	// filter above. Depth is not enforced here — ELF validation in the caller
+	// is the final gate before chmod +x.
 	var execs []ArchiveFile
 	for _, f := range candidates {
 		if isLikelyExecutable(f) {
@@ -522,13 +524,24 @@ func (i *GitHubInstaller) Uninstall(ctx context.Context, name string) error {
 	if idx < 0 {
 		return ErrPackageNotInstalled
 	}
-	for _, b := range m.Packages[idx].Binaries {
+	binaries := m.Packages[idx].Binaries
+	// Persist the manifest BEFORE touching the files on disk. If saveManifest
+	// fails we bail out without orphaning binaries on a manifest that still
+	// claims them as installed (a retried Uninstall would otherwise hit
+	// ErrPackageNotInstalled after the first attempt wiped the files).
+	m.Packages = append(m.Packages[:idx], m.Packages[idx+1:]...)
+	if err := i.saveManifest(m); err != nil {
+		return err
+	}
+	// Remove-after-save is best-effort: a missing file is fine (idempotent),
+	// any other error is warned and the manifest still reflects the truth
+	// that the entry is no longer tracked.
+	for _, b := range binaries {
 		// Only remove files within our configured bin dir (defense in depth).
 		path := filepath.Join(i.Config.BinDir, filepath.Base(b))
 		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
 			slog.Warn("github.installer: remove binary failed", "path", path, "error", rerr)
 		}
 	}
-	m.Packages = append(m.Packages[:idx], m.Packages[idx+1:]...)
-	return i.saveManifest(m)
+	return nil
 }
