@@ -19,9 +19,10 @@ type PackageInfo struct {
 
 // InstalledPackages groups installed packages by manager.
 type InstalledPackages struct {
-	System []PackageInfo `json:"system"`
-	Pip    []PackageInfo `json:"pip"`
-	Npm    []PackageInfo `json:"npm"`
+	System []PackageInfo         `json:"system"`
+	Pip    []PackageInfo         `json:"pip"`
+	Npm    []PackageInfo         `json:"npm"`
+	GitHub []GitHubPackageEntry  `json:"github,omitempty"`
 }
 
 const listTimeout = 15 * time.Second
@@ -36,6 +37,11 @@ func ListInstalledPackages(ctx context.Context) *InstalledPackages {
 	result.System = listApkUserPackages(ctx)
 	result.Pip = listPipPackages(ctx)
 	result.Npm = listNpmPackages(ctx)
+	if gh := DefaultGitHubInstaller(); gh != nil {
+		if entries, err := gh.List(); err == nil {
+			result.GitHub = entries
+		}
+	}
 	return result
 }
 

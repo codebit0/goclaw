@@ -52,6 +52,17 @@ func InstallSingleDep(ctx context.Context, dep string) (bool, string) {
 	slog.Info("skills: installing dep", "dep", dep)
 
 	switch {
+	case strings.HasPrefix(dep, "github:"):
+		gh := DefaultGitHubInstaller()
+		if gh == nil {
+			return false, "github installer not configured"
+		}
+		if _, err := gh.Install(ctx, dep); err != nil {
+			slog.Error("skills: github install failed", "dep", dep, "error", err)
+			return false, err.Error()
+		}
+		slog.Info("skills: dep installed", "dep", dep)
+		return true, ""
 	case strings.HasPrefix(dep, "pip:"):
 		pkg := strings.TrimPrefix(dep, "pip:")
 		cmd := exec.CommandContext(ctx, "pip3", "install", "--no-cache-dir", "--break-system-packages", pkg)
@@ -162,6 +173,29 @@ func UninstallPackage(ctx context.Context, dep string) (bool, string) {
 	slog.Info("skills: uninstalling package", "dep", dep)
 
 	switch {
+	case strings.HasPrefix(dep, "github:"):
+		gh := DefaultGitHubInstaller()
+		if gh == nil {
+			return false, "github installer not configured"
+		}
+		// Accept either "github:name" (manifest name only) or the full "github:owner/repo[@tag]".
+		name := strings.TrimPrefix(dep, "github:")
+		// If the caller passed owner/repo form, use the repo name portion; else use as-is.
+		if spec, err := ParseGitHubSpec(dep); err == nil {
+			name = spec.Repo
+		} else if slash := strings.Index(name, "/"); slash >= 0 {
+			// tolerate bare "owner/repo" without the scheme prefix
+			name = name[slash+1:]
+			if at := strings.IndexByte(name, '@'); at >= 0 {
+				name = name[:at]
+			}
+		}
+		if err := gh.Uninstall(ctx, name); err != nil {
+			slog.Error("skills: github uninstall failed", "dep", dep, "error", err)
+			return false, err.Error()
+		}
+		slog.Info("skills: package uninstalled", "dep", dep)
+		return true, ""
 	case strings.HasPrefix(dep, "pip:"):
 		pkg := strings.TrimPrefix(dep, "pip:")
 		cmd := exec.CommandContext(ctx, "pip3", "uninstall", "-y", pkg)

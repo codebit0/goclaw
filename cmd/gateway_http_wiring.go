@@ -130,7 +130,8 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 		d.server.SetUsageHandler(httpapi.NewUsageHandler(d.pgStores.Snapshots, d.pgStores.DB))
 	}
 
-	// Runtime package management (install/uninstall system/pip/npm packages)
+	// Runtime package management (install/uninstall system/pip/npm/github packages)
+	initGitHubInstaller()
 	d.server.SetPackagesHandler(httpapi.NewPackagesHandler())
 
 	// API documentation (OpenAPI spec + Swagger UI at /docs)

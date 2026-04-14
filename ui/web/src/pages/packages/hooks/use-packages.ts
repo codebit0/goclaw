@@ -10,10 +10,23 @@ export interface PackageInfo {
   version: string;
 }
 
+export interface GitHubPackageInfo {
+  name: string;
+  repo: string;
+  tag: string;
+  binaries: string[];
+  sha256: string;
+  asset_url: string;
+  asset_name: string;
+  asset_size_bytes: number;
+  installed_at: string;
+}
+
 export interface InstalledPackages {
   system: PackageInfo[] | null;
   pip: PackageInfo[] | null;
   npm: PackageInfo[] | null;
+  github?: GitHubPackageInfo[] | null;
 }
 
 interface InstallResult {

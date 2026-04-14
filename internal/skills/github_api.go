@@ -1,0 +1,180 @@
+package skills
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Sentinel errors returned by the GitHub API client.
+var (
+	ErrGitHubNotFound     = errors.New("github: release not found")
+	ErrGitHubUnauthorized = errors.New("github: unauthorized (check token)")
+	ErrGitHubRateLimited  = errors.New("github: rate limited")
+	ErrGitHubServer       = errors.New("github: server error")
+)
+
+// GitHubAsset describes a single release asset.
+type GitHubAsset struct {
+	Name        string `json:"name"`
+	DownloadURL string `json:"browser_download_url"`
+	SizeBytes   int64  `json:"size"`
+	ContentType string `json:"content_type"`
+}
+
+// GitHubRelease is a simplified projection of the GitHub release payload.
+type GitHubRelease struct {
+	TagName     string        `json:"tag_name"`
+	Name        string        `json:"name"`
+	PublishedAt time.Time     `json:"published_at"`
+	Prerelease  bool          `json:"prerelease"`
+	Draft       bool          `json:"draft"`
+	Assets      []GitHubAsset `json:"assets"`
+}
+
+// releaseCacheEntry is a single cached release lookup.
+type releaseCacheEntry struct {
+	data      interface{}
+	expiresAt time.Time
+}
+
+// GitHubClient is a minimal REST client for the GitHub Releases API.
+// Supports optional bearer token (private repos + higher rate limit) and
+// an in-memory 10-minute TTL cache keyed by "owner/repo:tag".
+type GitHubClient struct {
+	Token      string
+	BaseURL    string // default "https://api.github.com" — overridable for tests
+	HTTPClient *http.Client
+
+	mu    sync.Mutex
+	cache map[string]releaseCacheEntry
+	ttl   time.Duration
+}
+
+// NewGitHubClient creates a client. If httpClient is nil, a default with 30s timeout is used.
+func NewGitHubClient(token string) *GitHubClient {
+	return &GitHubClient{
+		Token:      token,
+		BaseURL:    "https://api.github.com",
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		cache:      make(map[string]releaseCacheEntry),
+		ttl:        10 * time.Minute,
+	}
+}
+
+func (c *GitHubClient) cacheGet(key string) (interface{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.cache[key]
+	if !ok || time.Now().After(e.expiresAt) {
+		return nil, false
+	}
+	return e.data, true
+}
+
+func (c *GitHubClient) cacheSet(key string, v interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache[key] = releaseCacheEntry{data: v, expiresAt: time.Now().Add(c.ttl)}
+}
+
+// GetRelease fetches a single release by tag. If tag is empty, "latest" is used.
+func (c *GitHubClient) GetRelease(ctx context.Context, owner, repo, tag string) (*GitHubRelease, error) {
+	key := fmt.Sprintf("rel:%s/%s:%s", owner, repo, tag)
+	if v, ok := c.cacheGet(key); ok {
+		r := v.(*GitHubRelease)
+		return r, nil
+	}
+
+	var path string
+	if tag == "" {
+		path = fmt.Sprintf("/repos/%s/%s/releases/latest", owner, repo)
+	} else {
+		path = fmt.Sprintf("/repos/%s/%s/releases/tags/%s", owner, repo, tag)
+	}
+
+	var rel GitHubRelease
+	if err := c.doJSON(ctx, path, &rel); err != nil {
+		return nil, err
+	}
+	c.cacheSet(key, &rel)
+	return &rel, nil
+}
+
+// ListReleases returns the most recent releases (at most `limit`, max 100).
+func (c *GitHubClient) ListReleases(ctx context.Context, owner, repo string, limit int) ([]GitHubRelease, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	key := fmt.Sprintf("list:%s/%s:%d", owner, repo, limit)
+	if v, ok := c.cacheGet(key); ok {
+		return v.([]GitHubRelease), nil
+	}
+	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=%d", owner, repo, limit)
+	var releases []GitHubRelease
+	if err := c.doJSON(ctx, path, &releases); err != nil {
+		return nil, err
+	}
+	c.cacheSet(key, releases)
+	return releases, nil
+}
+
+// doJSON performs a GET + JSON decode, mapping status codes to sentinel errors.
+func (c *GitHubClient) doJSON(ctx context.Context, path string, out interface{}) error {
+	url := c.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("github: http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		// fall through
+	case resp.StatusCode == http.StatusNotFound:
+		return ErrGitHubNotFound
+	case resp.StatusCode == http.StatusUnauthorized:
+		return ErrGitHubUnauthorized
+	case resp.StatusCode == http.StatusForbidden:
+		// Rate limit check
+		remaining := resp.Header.Get("X-RateLimit-Remaining")
+		if remaining == "0" {
+			reset := resp.Header.Get("X-RateLimit-Reset")
+			if n, errConv := strconv.ParseInt(reset, 10, 64); errConv == nil {
+				return fmt.Errorf("%w (resets at %s)", ErrGitHubRateLimited, time.Unix(n, 0).UTC().Format(time.RFC3339))
+			}
+			return ErrGitHubRateLimited
+		}
+		return ErrGitHubUnauthorized
+	case resp.StatusCode >= 500:
+		return ErrGitHubServer
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("github: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("github: decode response: %w", err)
+	}
+	return nil
+}

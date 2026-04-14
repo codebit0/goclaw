@@ -3,6 +3,9 @@ package http
 import (
 	"net/http"
 	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
@@ -10,8 +13,12 @@ import (
 )
 
 // validPkgName allows alphanumeric, hyphens, underscores, dots, @, / (for scoped npm).
+// Accepts the `github:owner/repo[@tag]` spec as a single literal (contains `:`, `/`, `@`).
 // Rejects names starting with - to prevent argument injection.
-var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@][a-zA-Z0-9._+\-/@]*$`)
+var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@][a-zA-Z0-9._+\-/@:]*$`)
+
+// validRepoPath matches "owner/repo" used by the releases endpoint.
+var validRepoPath = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // PackagesHandler handles runtime package management HTTP endpoints.
 type PackagesHandler struct{}
@@ -27,6 +34,7 @@ func (h *PackagesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/packages/install", h.adminAuth(h.handleInstall))
 	mux.HandleFunc("POST /v1/packages/uninstall", h.adminAuth(h.handleUninstall))
 	mux.HandleFunc("GET /v1/packages/runtimes", h.readAuth(h.handleRuntimes))
+	mux.HandleFunc("GET /v1/packages/github-releases", h.readAuth(h.handleGitHubReleases))
 	mux.HandleFunc("GET /v1/shell-deny-groups", h.readAuth(h.handleDenyGroups))
 }
 
@@ -61,6 +69,16 @@ func parseAndValidatePackage(w http.ResponseWriter, r *http.Request) string {
 	if body.Package == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "package required"})
 		return ""
+	}
+
+	// github: packages carry the scheme prefix through the whole pipeline — validate
+	// the bare spec via the installer parser rather than the generic regex.
+	if strings.HasPrefix(body.Package, "github:") {
+		if _, err := skills.ParseGitHubSpec(body.Package); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid github spec"})
+			return ""
+		}
+		return body.Package
 	}
 
 	// Strip prefix for validation, then validate the bare package name.
@@ -126,6 +144,78 @@ func (h *PackagesHandler) handleUninstall(w http.ResponseWriter, r *http.Request
 // handleRuntimes returns the availability of prerequisite runtimes.
 func (h *PackagesHandler) handleRuntimes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, skills.CheckRuntimes())
+}
+
+// handleGitHubReleases proxies the GitHub Releases API for the picker UI.
+// GET /v1/packages/github-releases?repo=owner/repo&limit=10
+// Auth: viewer+ (read-only, no secrets exposed).
+func (h *PackagesHandler) handleGitHubReleases(w http.ResponseWriter, r *http.Request) {
+	gh := skills.DefaultGitHubInstaller()
+	if gh == nil || gh.Client == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "github installer not configured"})
+		return
+	}
+	repo := r.URL.Query().Get("repo")
+	if !validRepoPath.MatchString(repo) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid repo; expected owner/repo"})
+		return
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	owner, repoName := parts[0], parts[1]
+
+	if !gh.AllowedOrg(owner) {
+		// Return 404 rather than 403 so allowlist membership is not enumerable.
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+
+	limit := 10
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= 50 {
+			limit = n
+		}
+	}
+
+	releases, err := gh.Client.ListReleases(r.Context(), owner, repoName, limit)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	type releaseDTO struct {
+		Tag             string              `json:"tag"`
+		Name            string              `json:"name"`
+		PublishedAt     string              `json:"published_at"`
+		Prerelease      bool                `json:"prerelease"`
+		MatchingAssets  []skills.GitHubAsset `json:"matching_assets"`
+		AllAssetsCount  int                 `json:"all_assets_count"`
+	}
+	out := make([]releaseDTO, 0, len(releases))
+	for _, rel := range releases {
+		if rel.Draft {
+			continue
+		}
+		if pick, perr := skills.SelectAsset(rel.Assets, "linux", runtime.GOARCH); perr == nil && pick != nil {
+			out = append(out, releaseDTO{
+				Tag:            rel.TagName,
+				Name:           rel.Name,
+				PublishedAt:    rel.PublishedAt.UTC().Format("2006-01-02T15:04:05Z"),
+				Prerelease:     rel.Prerelease,
+				MatchingAssets: []skills.GitHubAsset{*pick},
+				AllAssetsCount: len(rel.Assets),
+			})
+		} else {
+			out = append(out, releaseDTO{
+				Tag:            rel.TagName,
+				Name:           rel.Name,
+				PublishedAt:    rel.PublishedAt.UTC().Format("2006-01-02T15:04:05Z"),
+				Prerelease:     rel.Prerelease,
+				MatchingAssets: nil,
+				AllAssetsCount: len(rel.Assets),
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"releases": out})
 }
 
 // handleDenyGroups returns all registered shell deny groups with name, description, and default state.
