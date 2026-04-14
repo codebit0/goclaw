@@ -189,6 +189,12 @@ func (c *GitHubClient) doJSON(ctx context.Context, path string, out any) error {
 			return ErrGitHubRateLimited
 		}
 		return ErrGitHubUnauthorized
+	case resp.StatusCode == http.StatusTooManyRequests:
+		// GitHub secondary rate limits (abuse detection, search, unauthenticated
+		// bursts) return 429 rather than 403+X-RateLimit-Remaining:0. Map both
+		// onto the same sentinel so the HTTP handler renders a 429 "rate limit
+		// reached" instead of a 502 "failed to fetch releases".
+		return ErrGitHubRateLimited
 	case resp.StatusCode >= 500:
 		return ErrGitHubServer
 	default:
