@@ -202,7 +202,13 @@ func (c *GitHubClient) doJSON(ctx context.Context, path string, out any) error {
 		return fmt.Errorf("github: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	// Cap the response body at a generous 8 MiB. GitHub's release/list
+	// payloads are well under this (a 100-release list with rich asset
+	// metadata sits around 1 MiB). Belt-and-braces in case a future caller
+	// adds a path that could return a much larger document, or a
+	// man-in-the-middle / misbehaving upstream sends an oversized body.
+	const maxAPIResponseBytes = 8 * 1024 * 1024
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAPIResponseBytes)).Decode(out); err != nil {
 		return fmt.Errorf("github: decode response: %w", err)
 	}
 	return nil

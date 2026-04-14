@@ -66,6 +66,11 @@ func ParseChecksums(content []byte) (map[string]string, error) {
 	for _, m := range matches {
 		sha := strings.ToLower(string(m[1]))
 		name := strings.TrimSpace(string(m[2]))
+		// `sha256sum ./file` emits `./file` in the name column. Strip the
+		// leading `./` so the lookup in the caller (keyed by bare asset
+		// basename) matches. Real release checksums almost never use this
+		// form, but the guard is defensive and essentially free.
+		name = strings.TrimPrefix(name, "./")
 		// In "checksums.txt" the name may be just a basename. Keep as-is;
 		// caller looks up by asset name which matches basename.
 		out[name] = sha
