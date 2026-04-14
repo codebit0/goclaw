@@ -9,15 +9,15 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { useHttp } from "@/hooks/use-ws";
 import { queryKeys } from "@/lib/query-keys";
 
+// Viewer-safe projection — backend strips asset_url / sha256 / asset_name from
+// the GET /v1/packages response (see GitHubPackageListEntry in Go). The UI
+// only renders repo / tag / binaries / installed_at, so those extra fields
+// were never needed on this side.
 export interface GitHubPackageEntry {
   name: string;
   repo: string;
   tag: string;
   binaries: string[];
-  sha256: string;
-  asset_url: string;
-  asset_name: string;
-  asset_size_bytes: number;
   installed_at: string;
 }
 

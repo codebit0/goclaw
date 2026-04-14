@@ -10,15 +10,14 @@ export interface PackageInfo {
   version: string;
 }
 
+// Viewer-safe projection — mirrors GitHubPackageListEntry on the Go side.
+// asset_url / sha256 / asset_name are deliberately stripped from the list
+// response and are not exposed to viewer-level callers.
 export interface GitHubPackageInfo {
   name: string;
   repo: string;
   tag: string;
   binaries: string[];
-  sha256: string;
-  asset_url: string;
-  asset_name: string;
-  asset_size_bytes: number;
   installed_at: string;
 }
 
