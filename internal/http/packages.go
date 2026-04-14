@@ -13,9 +13,9 @@ import (
 )
 
 // validPkgName allows alphanumeric, hyphens, underscores, dots, @, / (for scoped npm).
-// Accepts the `github:owner/repo[@tag]` spec as a single literal (contains `:`, `/`, `@`).
+// `github:` specs are validated separately (via skills.ParseGitHubSpec) and bypass this regex.
 // Rejects names starting with - to prevent argument injection.
-var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@][a-zA-Z0-9._+\-/@:]*$`)
+var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@][a-zA-Z0-9._+\-/@]*$`)
 
 // validRepoPath matches "owner/repo" used by the releases endpoint.
 var validRepoPath = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9][A-Za-z0-9._-]*$`)

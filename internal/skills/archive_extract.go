@@ -18,10 +18,9 @@ import (
 
 // Sentinel errors for archive extraction.
 var (
-	ErrUnsafePath      = errors.New("archive: unsafe path rejected")
-	ErrZipBomb         = errors.New("archive: uncompressed size exceeds limit (zip bomb protection)")
-	ErrUnknownArchive  = errors.New("archive: unknown format")
-	ErrFileTooLarge    = errors.New("archive: single file exceeds limit")
+	ErrUnsafePath   = errors.New("archive: unsafe path rejected")
+	ErrZipBomb      = errors.New("archive: uncompressed size exceeds limit (zip bomb protection)")
+	ErrFileTooLarge = errors.New("archive: single file exceeds limit")
 )
 
 // ArchiveFile is a single extracted entry held in memory.
@@ -244,7 +243,6 @@ func extractRaw(f *os.File, name string) ([]ArchiveFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = ErrUnknownArchive // retained for external callers
 	return []ArchiveFile{{
 		Name:    clean,
 		Mode:    0o755,
