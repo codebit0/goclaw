@@ -60,7 +60,7 @@ func ExtractArchive(path string, maxUncompressed int64) ([]ArchiveFile, error) {
 	case bytes.HasPrefix(prefix, magicZip):
 		return extractZip(path, maxUncompressed)
 	case bytes.HasPrefix(prefix, magicELF):
-		return extractRaw(f, filepath.Base(path))
+		return extractRaw(f, filepath.Base(path), maxUncompressed)
 	}
 	// Fallback on extension.
 	lower := strings.ToLower(path)
@@ -71,7 +71,7 @@ func ExtractArchive(path string, maxUncompressed int64) ([]ArchiveFile, error) {
 		return extractZip(path, maxUncompressed)
 	}
 	// Last resort: treat as raw binary.
-	return extractRaw(f, filepath.Base(path))
+	return extractRaw(f, filepath.Base(path), maxUncompressed)
 }
 
 // sanitizePath rejects absolute, parent-escaping, and Windows-drive paths.
@@ -234,10 +234,18 @@ func extractZip(filePath string, maxUncompressed int64) ([]ArchiveFile, error) {
 }
 
 // extractRaw reads the entire file as a single binary entry.
-func extractRaw(f *os.File, name string) ([]ArchiveFile, error) {
-	b, err := io.ReadAll(f)
+// maxBytes guards against oversized inputs (belt-and-braces with the downloader
+// cap) so this helper is safe to call from any context.
+func extractRaw(f *os.File, name string, maxBytes int64) ([]ArchiveFile, error) {
+	if maxBytes <= 0 {
+		maxBytes = 200 * 1024 * 1024
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(b)) > maxBytes {
+		return nil, ErrFileTooLarge
 	}
 	clean, err := sanitizePath(name)
 	if err != nil {

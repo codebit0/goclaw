@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -13,17 +14,29 @@ import (
 // perKeyRateLimiter is a minimal per-key token-bucket limiter used to cap
 // external GitHub API usage initiated through /v1/packages/github-releases.
 // Key is userID (header X-GoClaw-User-Id) or RemoteAddr when anonymous.
+//
+// Stale-entry eviction is amortized: every perKeyRateLimiterSweepInterval
+// accepted requests trigger an inline scan. This avoids a background
+// goroutine (which leaked in tests when the package-level instance was
+// swapped out) and sidesteps data races on per-entry state.
 type perKeyRateLimiter struct {
-	limiters sync.Map // key → *perKeyEntry
-	rps      rate.Limit
-	burst    int
-	cleanup  sync.Once
+	limiters    sync.Map // key → *perKeyEntry
+	rps         rate.Limit
+	burst       int
+	callCounter atomic.Int64
 }
 
 type perKeyEntry struct {
 	limiter  *rate.Limiter
-	lastSeen time.Time
+	lastSeen atomic.Int64 // unix nanoseconds; updated on every Allow=true
 }
+
+// perKeyRateLimiterSweepInterval controls how often (per accepted call) the
+// stale-entry sweep runs. Power-of-two for cheap modulo.
+const perKeyRateLimiterSweepInterval = 1024
+
+// perKeyRateLimiterStaleAfter is the idle window before an entry is evicted.
+const perKeyRateLimiterStaleAfter = 10 * time.Minute
 
 // newPerKeyRateLimiter: rpm is requests per minute, burst is max burst size.
 // rpm <= 0 disables (always allows).
@@ -43,31 +56,36 @@ func (rl *perKeyRateLimiter) Allow(key string) bool {
 	if rl.rps == 0 {
 		return true // disabled
 	}
-	rl.cleanup.Do(func() { go rl.cleanupLoop() })
-	v, _ := rl.limiters.LoadOrStore(key, &perKeyEntry{
-		limiter:  rate.NewLimiter(rl.rps, rl.burst),
-		lastSeen: time.Now(),
-	})
+	nowNs := time.Now().UnixNano()
+
+	// Prepare a fresh entry up front; LoadOrStore discards it on existing keys.
+	fresh := &perKeyEntry{limiter: rate.NewLimiter(rl.rps, rl.burst)}
+	fresh.lastSeen.Store(nowNs)
+
+	v, _ := rl.limiters.LoadOrStore(key, fresh)
 	entry := v.(*perKeyEntry)
 	if !entry.limiter.Allow() {
 		return false
 	}
-	entry.lastSeen = time.Now()
+	entry.lastSeen.Store(nowNs)
+
+	if rl.callCounter.Add(1)%perKeyRateLimiterSweepInterval == 0 {
+		rl.sweepStale()
+	}
 	return true
 }
 
-func (rl *perKeyRateLimiter) cleanupLoop() {
-	t := time.NewTicker(5 * time.Minute)
-	defer t.Stop()
-	for range t.C {
-		cutoff := time.Now().Add(-10 * time.Minute)
-		rl.limiters.Range(func(k, v any) bool {
-			if v.(*perKeyEntry).lastSeen.Before(cutoff) {
-				rl.limiters.Delete(k)
-			}
-			return true
-		})
-	}
+// sweepStale evicts entries older than perKeyRateLimiterStaleAfter.
+// Safe for concurrent invocation — sync.Map.Range + atomic lastSeen guarantee
+// data-race freedom.
+func (rl *perKeyRateLimiter) sweepStale() {
+	cutoffNs := time.Now().Add(-perKeyRateLimiterStaleAfter).UnixNano()
+	rl.limiters.Range(func(k, v any) bool {
+		if v.(*perKeyEntry).lastSeen.Load() < cutoffNs {
+			rl.limiters.Delete(k)
+		}
+		return true
+	})
 }
 
 // githubReleasesLimiter caps calls to the picker endpoint to protect the

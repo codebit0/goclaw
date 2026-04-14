@@ -38,9 +38,9 @@ type GitHubSpec struct {
 }
 
 // gitHubSpecRE validates the supported identifier format.
-// Owner: GitHub usernames can be 1+ chars with alnum + hyphen (no leading/trailing hyphen).
-// Repo: alnum + `.`/`_`/`-`. Tag: anything non-empty except NUL/newline.
-var gitHubSpecRE = regexp.MustCompile(`^github:([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?[A-Za-z0-9]|[A-Za-z0-9])/([A-Za-z0-9][A-Za-z0-9._-]*)(?:@([^\s\x00]+))?$`)
+// Owner: GitHub usernames are capped at 39 chars, alnum + hyphen, no leading/trailing hyphen.
+// Repo: alnum + `.`/`_`/`-`. Tag: anything non-empty except NUL/whitespace.
+var gitHubSpecRE = regexp.MustCompile(`^github:([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])/([A-Za-z0-9][A-Za-z0-9._-]*)(?:@([^\s\x00]+))?$`)
 
 // ParseGitHubSpec parses an identifier string.
 func ParseGitHubSpec(s string) (*GitHubSpec, error) {
@@ -93,7 +93,8 @@ type GitHubInstaller struct {
 	Client *GitHubClient
 	Config *GitHubPackagesConfig
 
-	mu sync.Mutex // serializes manifest writes + concurrent installs
+	mu sync.Mutex // serializes the final disk-write phase: bin dir writes + manifest mutation
+	//             (download, extraction, and ELF validation intentionally run outside the lock)
 }
 
 // NewGitHubInstaller constructs an installer.
@@ -209,6 +210,10 @@ func enrichNoMatch(all []GitHubAsset, goos, goarch string) error {
 // -------- Manifest --------
 
 // GitHubPackageEntry records metadata about an installed package.
+//
+// Note: there is no InstalledBy field — the install call doesn't currently
+// thread a user ID through, and an always-empty audit field is more misleading
+// than useful. Add it back if/when the request context is plumbed in.
 type GitHubPackageEntry struct {
 	Name           string    `json:"name"`
 	Repo           string    `json:"repo"`
@@ -219,7 +224,6 @@ type GitHubPackageEntry struct {
 	AssetName      string    `json:"asset_name"`
 	AssetSizeBytes int64     `json:"asset_size_bytes"`
 	InstalledAt    time.Time `json:"installed_at"`
-	InstalledBy    string    `json:"installed_by,omitempty"`
 }
 
 // GitHubManifest is the persisted state for installed GitHub packages.
@@ -385,20 +389,32 @@ func (i *GitHubInstaller) Install(ctx context.Context, spec string) (*GitHubPack
 	defer os.Remove(tmpPath)
 
 	// Checksum verification (if publisher provides it).
+	// Failure modes that silently proceed are noisy-logged so an operator can
+	// detect a modified checksum file being served alongside a tampered asset.
 	if ca := FindChecksumAsset(release, asset.Name); ca != nil {
 		checksumPath, _, cerr := i.Client.DownloadAsset(ctx, ca.DownloadURL, 1<<20) // 1 MiB cap
 		if cerr == nil {
 			defer os.Remove(checksumPath)
-			if data, rerr := os.ReadFile(checksumPath); rerr == nil {
-				if sums, perr := ParseChecksums(data); perr == nil {
-					if expected, ok := sums[asset.Name]; ok {
-						if verr := VerifyChecksum(expected, sha); verr != nil {
-							return nil, verr
-						}
-					} else {
-						slog.Warn("github.installer: asset not listed in checksum file",
-							"asset", asset.Name, "checksum_asset", ca.Name)
+			data, rerr := os.ReadFile(checksumPath)
+			if rerr != nil {
+				slog.Warn("github.installer: read checksum file failed",
+					"checksum_asset", ca.Name, "error", rerr)
+			} else {
+				sums, perr := ParseChecksums(data)
+				if perr != nil {
+					slog.Warn("github.installer: parse checksum file failed",
+						"checksum_asset", ca.Name, "error", perr)
+				} else if expected, ok := sums[asset.Name]; ok {
+					if verr := VerifyChecksum(expected, sha); verr != nil {
+						return nil, verr
 					}
+				} else {
+					// Publisher ships a checksum file that omits this asset.
+					// Could be benign (asset added later, different file set)
+					// or a MITM replacing the checksum file with an entry-free
+					// one. We warn loudly; ELF validation remains the final gate.
+					slog.Warn("github.installer: asset not listed in checksum file",
+						"asset", asset.Name, "checksum_asset", ca.Name)
 				}
 			}
 		} else {

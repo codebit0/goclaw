@@ -39,8 +39,10 @@ func initGitHubInstaller() {
 		}
 	}
 
-	// Defaults() fills zero-valued fields and normalizes AllowedOrgs.
-	cfg.Defaults()
+	// NewGitHubInstaller calls cfg.Defaults() — no need to invoke it here.
+	client := skills.NewGitHubClient(cfg.Token)
+	installer := skills.NewGitHubInstaller(client, cfg)
+	skills.SetDefaultGitHubInstaller(installer)
 
 	// Best-effort ensure bin dir + manifest dir exist (entrypoint may run as root
 	// while Go process runs as goclaw — respect pre-existing permissions).
@@ -50,10 +52,6 @@ func initGitHubInstaller() {
 	if err := os.MkdirAll(filepath.Dir(cfg.ManifestPath), 0o755); err != nil {
 		slog.Warn("github.installer: mkdir manifest dir failed", "path", cfg.ManifestPath, "error", err)
 	}
-
-	client := skills.NewGitHubClient(cfg.Token)
-	installer := skills.NewGitHubInstaller(client, cfg)
-	skills.SetDefaultGitHubInstaller(installer)
 
 	slog.Info("packages: github installer enabled",
 		"bin_dir", cfg.BinDir,

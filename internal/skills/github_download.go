@@ -64,8 +64,10 @@ func (c *GitHubClient) DownloadAsset(ctx context.Context, assetURL string, maxBy
 	}
 
 	// Build a client that validates every redirect hop.
+	// No Timeout here — it caps the whole request including body read, which
+	// would abort large (hundreds of MB) downloads on modest connections.
+	// The caller's context carries the correct deadline (install timeout).
 	client := &http.Client{
-		Timeout: c.HTTPClient.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return ErrTooManyRedirect

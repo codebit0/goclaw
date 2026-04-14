@@ -44,14 +44,26 @@ interface Props {
 
 const MUSL_DISMISS_KEY = "packages.musl_warning_dismissed";
 
+// Owner: GitHub usernames are capped at 39 chars (alnum + hyphen, no leading/trailing hyphen).
+// Repo: alnum + `.`/`_`/`-`. Mirrors the backend `gitHubSpecRE`.
+const OWNER_REPO_RE =
+  /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function stripPrefixAndTag(spec: string): string {
+  // Destructuring with a default satisfies TS `noUncheckedIndexedAccess`
+  // (split is guaranteed to return ≥1 element at runtime, but TS types it
+  // as `string | undefined`).
+  const [name = ""] = spec.replace(/^github:/, "").split("@");
+  return name;
+}
+
 function isValidRepo(spec: string): boolean {
-  const name = spec.replace(/^github:/, "").split("@")[0] ?? "";
-  return /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name);
+  return OWNER_REPO_RE.test(stripPrefixAndTag(spec));
 }
 
 function isValidFullSpec(spec: string): boolean {
   // owner/repo OR owner/repo@tag (prefix `github:` optional in the input box).
-  return /^([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)(@[^\s]+)?$/.test(
+  return /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])\/[A-Za-z0-9][A-Za-z0-9._-]*(@[^\s]+)?$/.test(
     spec.replace(/^github:/, "")
   );
 }
@@ -81,9 +93,8 @@ export function GitHubBinariesSection({ packages, onInstall, onUninstall }: Prop
   };
 
   const handleBrowse = () => {
-    const repo = input.replace(/^github:/, "").split("@")[0] ?? "";
     if (!isValidRepo(input)) return;
-    setPickerRepo(repo);
+    setPickerRepo(stripPrefixAndTag(input));
     setPickerOpen(true);
   };
 
