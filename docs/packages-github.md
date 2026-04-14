@@ -90,6 +90,7 @@ Token scopes:
 - Zip-bomb guard (cumulative uncompressed bytes capped at 2× max asset size)
 - Symlink / hardlink entries skipped, never written
 - Admin-only API + master-scope guard on install/uninstall
+- Picker endpoint `/v1/packages/github-releases` throttled per user (30 req/min, burst 10) to protect GitHub API quota; anonymous fallback keyed by remote IP. Response is `429 Too Many Requests` with `Retry-After: 60` when tripped.
 - Token never logged (startup log prints `token_set=bool`)
 
 ## Troubleshooting

@@ -149,7 +149,11 @@ func (h *PackagesHandler) handleRuntimes(w http.ResponseWriter, _ *http.Request)
 // handleGitHubReleases proxies the GitHub Releases API for the picker UI.
 // GET /v1/packages/github-releases?repo=owner/repo&limit=10
 // Auth: viewer+ (read-only, no secrets exposed).
+// Throttled via per-user rate limiter to protect the shared GitHub API quota.
 func (h *PackagesHandler) handleGitHubReleases(w http.ResponseWriter, r *http.Request) {
+	if !enforceGitHubReleasesLimit(w, r) {
+		return
+	}
 	gh := skills.DefaultGitHubInstaller()
 	if gh == nil || gh.Client == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "github installer not configured"})
