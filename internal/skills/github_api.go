@@ -80,9 +80,12 @@ func (c *GitHubClient) cacheGet(key string) (any, bool) {
 	return e.data, true
 }
 
-// cacheMaxEntries triggers an opportunistic sweep of expired entries once the
-// cache grows past this threshold. Prevents unbounded growth over long uptime
-// when many distinct repo queries land.
+// cacheMaxEntries is a SOFT sweep trigger, not a hard cap: once the map
+// reaches this size we scan for expired entries and drop them before
+// inserting the new one. If every entry is still live the map can briefly
+// exceed the threshold — in practice the 10-minute TTL keeps growth bounded
+// by the request rate. Prevents unbounded growth from many distinct repos
+// being queried over long uptime.
 const cacheMaxEntries = 256
 
 func (c *GitHubClient) cacheSet(key string, v any) {

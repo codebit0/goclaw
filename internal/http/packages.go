@@ -1,7 +1,9 @@
 package http
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"runtime"
@@ -119,6 +121,8 @@ func (h *PackagesHandler) handleInstall(w http.ResponseWriter, r *http.Request) 
 	// Fast path for github: specs — call the installer directly so we can
 	// return the freshly-created manifest entry without a second disk read
 	// via List(). Other prefixes fall through to the generic dispatcher.
+	// Uses the same InstallTimeout + top-level log line as InstallSingleDep
+	// for operator-observability parity across install paths.
 	if strings.HasPrefix(pkg, "github:") {
 		gh := skills.DefaultGitHubInstaller()
 		if gh == nil {
@@ -127,13 +131,18 @@ func (h *PackagesHandler) handleInstall(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
-		entry, err := gh.Install(r.Context(), pkg)
+		slog.Info("skills: installing dep", "dep", pkg)
+		ctx, cancel := context.WithTimeout(r.Context(), skills.InstallTimeout)
+		defer cancel()
+		entry, err := gh.Install(ctx, pkg)
 		if err != nil {
+			slog.Error("skills: github install failed", "dep", pkg, "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok": false, "error": err.Error(),
 			})
 			return
 		}
+		slog.Info("skills: dep installed", "dep", pkg)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": entry})
 		return
 	}

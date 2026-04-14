@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const installTimeout = 5 * time.Minute
+// InstallTimeout is the wall-clock cap applied to a single package install.
+// Exported so HTTP handlers that bypass InstallSingleDep (e.g. the github:
+// fast path) can wrap their context with the same deadline.
+const InstallTimeout = 5 * time.Minute
 
 // pkgHelperSocket is the Unix socket path for the root-privileged pkg-helper.
 const pkgHelperSocket = "/tmp/pkg.sock"
@@ -46,7 +49,7 @@ func AggregateMissingDeps(skillDirs map[string]string) (*SkillManifest, []string
 // InstallSingleDep installs one dependency (format: "pip:pkg", "npm:pkg", or plain binary name).
 // Returns (ok, errorMessage). Logs progress via slog so the Log page can show install status.
 func InstallSingleDep(ctx context.Context, dep string) (bool, string) {
-	ctx, cancel := context.WithTimeout(ctx, installTimeout)
+	ctx, cancel := context.WithTimeout(ctx, InstallTimeout)
 	defer cancel()
 
 	slog.Info("skills: installing dep", "dep", dep)
@@ -98,7 +101,7 @@ func InstallSingleDep(ctx context.Context, dep string) (bool, string) {
 // InstallDeps installs missing packages by category.
 // Uses PIP_TARGET and NPM_CONFIG_PREFIX from env (set by docker-entrypoint.sh).
 func InstallDeps(ctx context.Context, manifest *SkillManifest, missing []string) (*InstallResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, installTimeout)
+	ctx, cancel := context.WithTimeout(ctx, InstallTimeout)
 	defer cancel()
 
 	result := &InstallResult{}
@@ -167,7 +170,7 @@ func InstallDeps(ctx context.Context, manifest *SkillManifest, missing []string)
 // UninstallPackage removes one package (format: "pip:pkg", "npm:pkg", or plain apk name).
 // Returns (ok, errorMessage).
 func UninstallPackage(ctx context.Context, dep string) (bool, string) {
-	ctx, cancel := context.WithTimeout(ctx, installTimeout)
+	ctx, cancel := context.WithTimeout(ctx, InstallTimeout)
 	defer cancel()
 
 	slog.Info("skills: uninstalling package", "dep", dep)
