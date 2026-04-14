@@ -362,8 +362,10 @@ func mapStopReason(resp *acp.PromptResponse) string {
 		return "stop"
 	}
 	switch resp.StopReason {
-	case "maxContextLength":
+	case "max_tokens", "maxContextLength":
 		return "length"
+	case "cancelled":
+		return "stop"
 	default:
 		return "stop"
 	}
