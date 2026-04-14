@@ -45,7 +45,7 @@ interface Props {
 const MUSL_DISMISS_KEY = "packages.musl_warning_dismissed";
 
 function isValidRepo(spec: string): boolean {
-  const name = spec.replace(/^github:/, "").split("@")[0];
+  const name = spec.replace(/^github:/, "").split("@")[0] ?? "";
   return /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name);
 }
 
@@ -81,7 +81,7 @@ export function GitHubBinariesSection({ packages, onInstall, onUninstall }: Prop
   };
 
   const handleBrowse = () => {
-    const repo = input.replace(/^github:/, "").split("@")[0];
+    const repo = input.replace(/^github:/, "").split("@")[0] ?? "";
     if (!isValidRepo(input)) return;
     setPickerRepo(repo);
     setPickerOpen(true);
