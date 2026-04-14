@@ -63,7 +63,8 @@ function isValidRepo(spec: string): boolean {
 
 function isValidFullSpec(spec: string): boolean {
   // owner/repo OR owner/repo@tag (prefix `github:` optional in the input box).
-  return /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])\/[A-Za-z0-9][A-Za-z0-9._-]*(@[^\s]+)?$/.test(
+  // Tag capped at 255 chars to mirror the backend regex.
+  return /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])\/[A-Za-z0-9][A-Za-z0-9._-]*(@[^\s]{1,255})?$/.test(
     spec.replace(/^github:/, "")
   );
 }

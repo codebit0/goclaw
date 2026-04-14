@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"regexp"
 	"runtime"
@@ -18,7 +19,9 @@ import (
 var validPkgName = regexp.MustCompile(`^[a-zA-Z0-9@][a-zA-Z0-9._+\-/@]*$`)
 
 // validRepoPath matches "owner/repo" used by the releases endpoint.
-var validRepoPath = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9][A-Za-z0-9._-]*$`)
+// Owner rules mirror skills.gitHubSpecRE — GitHub caps usernames/orgs at 39 chars,
+// no leading/trailing hyphen.
+var validRepoPath = regexp.MustCompile(`^([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // PackagesHandler handles runtime package management HTTP endpoints.
 type PackagesHandler struct{}
@@ -117,7 +120,40 @@ func (h *PackagesHandler) handleInstall(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": errMsg})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	// For github: specs return the manifest entry so the UI can show
+	// "installed: lazygit v0.42.0" without a full list refresh.
+	if strings.HasPrefix(pkg, "github:") {
+		if entry := lookupGitHubEntry(pkg); entry != nil {
+			resp["entry"] = entry
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// lookupGitHubEntry resolves the freshly-installed manifest entry matching the
+// given spec. Returns nil if the installer is absent or the entry can't be
+// located — the caller falls back to the bare {ok:true} response.
+func lookupGitHubEntry(spec string) *skills.GitHubPackageEntry {
+	gh := skills.DefaultGitHubInstaller()
+	if gh == nil {
+		return nil
+	}
+	parsed, err := skills.ParseGitHubSpec(spec)
+	if err != nil {
+		return nil
+	}
+	entries, err := gh.List()
+	if err != nil {
+		return nil
+	}
+	want := parsed.Owner + "/" + parsed.Repo
+	for i := range entries {
+		if strings.EqualFold(entries[i].Repo, want) {
+			return &entries[i]
+		}
+	}
+	return nil
 }
 
 // handleUninstall removes a single package.
@@ -182,7 +218,20 @@ func (h *PackagesHandler) handleGitHubReleases(w http.ResponseWriter, r *http.Re
 
 	releases, err := gh.Client.ListReleases(r.Context(), owner, repoName, limit)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		// Map sentinel errors to generic client-safe messages. Avoid surfacing
+		// raw GitHub API error bodies (may include rate-limit timestamps,
+		// server-side internals) to viewer-level callers.
+		switch {
+		case errors.Is(err, skills.ErrGitHubRateLimited):
+			w.Header().Set("Retry-After", "60")
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "github rate limit reached"})
+		case errors.Is(err, skills.ErrGitHubNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "repository not found"})
+		case errors.Is(err, skills.ErrGitHubUnauthorized):
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "github authentication failed"})
+		default:
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to fetch releases"})
+		}
 		return
 	}
 

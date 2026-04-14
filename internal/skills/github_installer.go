@@ -39,8 +39,9 @@ type GitHubSpec struct {
 
 // gitHubSpecRE validates the supported identifier format.
 // Owner: GitHub usernames are capped at 39 chars, alnum + hyphen, no leading/trailing hyphen.
-// Repo: alnum + `.`/`_`/`-`. Tag: anything non-empty except NUL/whitespace.
-var gitHubSpecRE = regexp.MustCompile(`^github:([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])/([A-Za-z0-9][A-Za-z0-9._-]*)(?:@([^\s\x00]+))?$`)
+// Repo: alnum + `.`/`_`/`-`.
+// Tag: capped at 255 chars (git ref-name upper bound), excludes NUL/whitespace.
+var gitHubSpecRE = regexp.MustCompile(`^github:([A-Za-z0-9](?:[A-Za-z0-9-]{0,37})?[A-Za-z0-9]|[A-Za-z0-9])/([A-Za-z0-9][A-Za-z0-9._-]*)(?:@([^\s\x00]{1,255}))?$`)
 
 // ParseGitHubSpec parses an identifier string.
 func ParseGitHubSpec(s string) (*GitHubSpec, error) {
