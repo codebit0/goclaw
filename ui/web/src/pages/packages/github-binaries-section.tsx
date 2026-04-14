@@ -21,10 +21,9 @@ export interface GitHubPackageEntry {
   installed_at: string;
 }
 
-interface GitHubAsset {
+interface AssetPreview {
   name: string;
-  browser_download_url: string;
-  size: number;
+  size_bytes: number;
 }
 
 interface ReleaseDTO {
@@ -32,7 +31,7 @@ interface ReleaseDTO {
   name: string;
   published_at: string;
   prerelease: boolean;
-  matching_assets: GitHubAsset[] | null;
+  matching_assets: AssetPreview[] | null;
   all_assets_count: number;
 }
 

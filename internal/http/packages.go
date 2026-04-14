@@ -234,38 +234,38 @@ func (h *PackagesHandler) handleGitHubReleases(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// assetPreview is a deliberately-narrow projection of GitHubAsset exposed
+	// to viewer-level callers of the picker. The full GitHubAsset type carries
+	// the CDN download URL which the UI never renders — keep the response
+	// surface minimal (name + size_bytes are all the picker needs).
+	type assetPreview struct {
+		Name      string `json:"name"`
+		SizeBytes int64  `json:"size_bytes"`
+	}
 	type releaseDTO struct {
-		Tag            string               `json:"tag"`
-		Name           string               `json:"name"`
-		PublishedAt    string               `json:"published_at"`
-		Prerelease     bool                 `json:"prerelease"`
-		MatchingAssets []skills.GitHubAsset `json:"matching_assets"`
-		AllAssetsCount int                  `json:"all_assets_count"`
+		Tag            string         `json:"tag"`
+		Name           string         `json:"name"`
+		PublishedAt    string         `json:"published_at"`
+		Prerelease     bool           `json:"prerelease"`
+		MatchingAssets []assetPreview `json:"matching_assets"`
+		AllAssetsCount int            `json:"all_assets_count"`
 	}
 	out := make([]releaseDTO, 0, len(releases))
 	for _, rel := range releases {
 		if rel.Draft {
 			continue
 		}
-		if pick, perr := skills.SelectAsset(rel.Assets, "linux", runtime.GOARCH); perr == nil && pick != nil {
-			out = append(out, releaseDTO{
-				Tag:            rel.TagName,
-				Name:           rel.Name,
-				PublishedAt:    rel.PublishedAt.UTC().Format("2006-01-02T15:04:05Z"),
-				Prerelease:     rel.Prerelease,
-				MatchingAssets: []skills.GitHubAsset{*pick},
-				AllAssetsCount: len(rel.Assets),
-			})
-		} else {
-			out = append(out, releaseDTO{
-				Tag:            rel.TagName,
-				Name:           rel.Name,
-				PublishedAt:    rel.PublishedAt.UTC().Format("2006-01-02T15:04:05Z"),
-				Prerelease:     rel.Prerelease,
-				MatchingAssets: nil,
-				AllAssetsCount: len(rel.Assets),
-			})
+		dto := releaseDTO{
+			Tag:            rel.TagName,
+			Name:           rel.Name,
+			PublishedAt:    rel.PublishedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Prerelease:     rel.Prerelease,
+			AllAssetsCount: len(rel.Assets),
 		}
+		if pick, perr := skills.SelectAsset(rel.Assets, "linux", runtime.GOARCH); perr == nil && pick != nil {
+			dto.MatchingAssets = []assetPreview{{Name: pick.Name, SizeBytes: pick.SizeBytes}}
+		}
+		out = append(out, dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"releases": out})
 }

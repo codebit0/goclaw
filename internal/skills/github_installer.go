@@ -425,7 +425,11 @@ func (i *GitHubInstaller) Install(ctx context.Context, spec string) (*GitHubPack
 			slog.Warn("github.installer: failed to fetch checksum file", "error", cerr)
 		}
 	} else {
-		slog.Warn("github.installer: no checksum asset available", "asset", asset.Name)
+		// Not a problem with the install — many upstream publishers simply
+		// don't ship checksum files (jq, fzf, older ripgrep, etc.). Downgraded
+		// from Warn so the suspicious cases (read/parse/asset-not-listed
+		// errors, which stay at Warn above) stand out cleanly.
+		slog.Info("github.installer: no checksum asset available", "asset", asset.Name)
 	}
 
 	files, err := ExtractArchive(tmpPath, 2*maxBytes)
