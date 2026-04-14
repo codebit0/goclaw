@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
@@ -783,6 +784,66 @@ func TestToolStage_MultipleTools_Sequential_MessagesInOrder(t *testing.T) {
 	}
 	if pending[2].Content != "result:tool_c" {
 		t.Errorf("pending[2] = %q, want result:tool_c", pending[2].Content)
+	}
+	if state.Tool.TotalToolCalls != 3 {
+		t.Errorf("TotalToolCalls = %d, want 3", state.Tool.TotalToolCalls)
+	}
+}
+
+// Regression: v3 parallel path invokes ExecuteToolRaw + ProcessToolResult
+// for every tool call. If this breaks, the `tool.call` WS event emitted
+// inside makeExecuteToolRaw (loop_pipeline_tool_callbacks.go) stops firing
+// and UIs go silent during real-time tool execution.
+func TestToolStage_MultipleTools_ParallelPath_InvokesRawAndProcessForEach(t *testing.T) {
+	t.Parallel()
+	var rawMu, procMu sync.Mutex
+	rawCalls := []string{}
+	procCalls := []string{}
+	deps := &PipelineDeps{
+		// Parallel path requires all three callbacks. ExecuteToolCall is required
+		// upfront (nil-guard) even though the parallel branch won't invoke it.
+		ExecuteToolCall: func(_ context.Context, _ *RunState, _ providers.ToolCall) ([]providers.Message, error) {
+			t.Fatal("ExecuteToolCall must NOT be called when parallel path is active")
+			return nil, nil
+		},
+		ExecuteToolRaw: func(_ context.Context, tc providers.ToolCall) (providers.Message, any, error) {
+			rawMu.Lock()
+			rawCalls = append(rawCalls, tc.ID)
+			rawMu.Unlock()
+			return providers.Message{Role: "tool", Content: "raw:" + tc.Name, ToolCallID: tc.ID}, nil, nil
+		},
+		ProcessToolResult: func(_ context.Context, _ *RunState, tc providers.ToolCall, rawMsg providers.Message, _ any) []providers.Message {
+			procMu.Lock()
+			procCalls = append(procCalls, tc.ID)
+			procMu.Unlock()
+			return []providers.Message{rawMsg}
+		},
+	}
+	stage := NewToolStage(deps)
+	state := defaultState()
+	state.Think.LastResponse = &providers.ChatResponse{
+		ToolCalls: []providers.ToolCall{
+			{ID: "1", Name: "tool_a"},
+			{ID: "2", Name: "tool_b"},
+			{ID: "3", Name: "tool_c"},
+		},
+	}
+
+	if err := stage.Execute(context.Background(), state); err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	// Each tool must be passed through BOTH ExecuteToolRaw (where tool.call emits)
+	// AND ProcessToolResult (where tool.result emits). Missing either breaks UIs.
+	if len(rawCalls) != 3 {
+		t.Errorf("ExecuteToolRaw called %d times, want 3 (one per tool)", len(rawCalls))
+	}
+	if len(procCalls) != 3 {
+		t.Errorf("ProcessToolResult called %d times, want 3", len(procCalls))
+	}
+	// ProcessToolResult must run sequentially in original order (deterministic state mutation)
+	if len(procCalls) == 3 && (procCalls[0] != "1" || procCalls[1] != "2" || procCalls[2] != "3") {
+		t.Errorf("ProcessToolResult order = %v, want [1 2 3]", procCalls)
 	}
 	if state.Tool.TotalToolCalls != 3 {
 		t.Errorf("TotalToolCalls = %d, want 3", state.Tool.TotalToolCalls)
