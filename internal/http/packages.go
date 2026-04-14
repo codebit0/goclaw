@@ -115,45 +115,35 @@ func (h *PackagesHandler) handleInstall(w http.ResponseWriter, r *http.Request) 
 	if pkg == "" {
 		return
 	}
+
+	// Fast path for github: specs — call the installer directly so we can
+	// return the freshly-created manifest entry without a second disk read
+	// via List(). Other prefixes fall through to the generic dispatcher.
+	if strings.HasPrefix(pkg, "github:") {
+		gh := skills.DefaultGitHubInstaller()
+		if gh == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"ok": false, "error": "github installer not configured",
+			})
+			return
+		}
+		entry, err := gh.Install(r.Context(), pkg)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok": false, "error": err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": entry})
+		return
+	}
+
 	ok, errMsg := skills.InstallSingleDep(r.Context(), pkg)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": errMsg})
 		return
 	}
-	resp := map[string]any{"ok": true}
-	// For github: specs return the manifest entry so the UI can show
-	// "installed: lazygit v0.42.0" without a full list refresh.
-	if strings.HasPrefix(pkg, "github:") {
-		if entry := lookupGitHubEntry(pkg); entry != nil {
-			resp["entry"] = entry
-		}
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// lookupGitHubEntry resolves the freshly-installed manifest entry matching the
-// given spec. Returns nil if the installer is absent or the entry can't be
-// located — the caller falls back to the bare {ok:true} response.
-func lookupGitHubEntry(spec string) *skills.GitHubPackageEntry {
-	gh := skills.DefaultGitHubInstaller()
-	if gh == nil {
-		return nil
-	}
-	parsed, err := skills.ParseGitHubSpec(spec)
-	if err != nil {
-		return nil
-	}
-	entries, err := gh.List()
-	if err != nil {
-		return nil
-	}
-	want := parsed.Owner + "/" + parsed.Repo
-	for i := range entries {
-		if strings.EqualFold(entries[i].Repo, want) {
-			return &entries[i]
-		}
-	}
-	return nil
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleUninstall removes a single package.
@@ -236,12 +226,12 @@ func (h *PackagesHandler) handleGitHubReleases(w http.ResponseWriter, r *http.Re
 	}
 
 	type releaseDTO struct {
-		Tag             string              `json:"tag"`
-		Name            string              `json:"name"`
-		PublishedAt     string              `json:"published_at"`
-		Prerelease      bool                `json:"prerelease"`
-		MatchingAssets  []skills.GitHubAsset `json:"matching_assets"`
-		AllAssetsCount  int                 `json:"all_assets_count"`
+		Tag            string               `json:"tag"`
+		Name           string               `json:"name"`
+		PublishedAt    string               `json:"published_at"`
+		Prerelease     bool                 `json:"prerelease"`
+		MatchingAssets []skills.GitHubAsset `json:"matching_assets"`
+		AllAssetsCount int                  `json:"all_assets_count"`
 	}
 	out := make([]releaseDTO, 0, len(releases))
 	for _, rel := range releases {

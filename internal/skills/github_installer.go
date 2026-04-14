@@ -315,8 +315,9 @@ var nonBinaryPathRE = regexp.MustCompile(`(?i)(^|/)(man|docs?|contrib|completion
 // pickBinaries selects executable entries from an extracted archive.
 // Preference order:
 //  1. entries with basename == repo name (common case: `lazygit` binary in lazygit archive)
-//  2. all top-level executables (single depth) that aren't in docs/man/etc. paths
-//  3. any ELF-magic entry at top level
+//  2. all executable entries whose path doesn't match nonBinaryPathRE
+//     (man/docs/contrib/completions/examples/tests/licenses are excluded)
+//  3. any ELF-magic entry under a non-excluded path
 func pickBinaries(files []ArchiveFile, repoName string) []ArchiveFile {
 	// Filter out clearly-not-binary paths first.
 	var candidates []ArchiveFile

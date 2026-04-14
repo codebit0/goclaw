@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,9 +80,22 @@ func (c *GitHubClient) cacheGet(key string) (interface{}, bool) {
 	return e.data, true
 }
 
+// cacheMaxEntries triggers an opportunistic sweep of expired entries once the
+// cache grows past this threshold. Prevents unbounded growth over long uptime
+// when many distinct repo queries land.
+const cacheMaxEntries = 256
+
 func (c *GitHubClient) cacheSet(key string, v interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.cache) >= cacheMaxEntries {
+		now := time.Now()
+		for k, e := range c.cache {
+			if now.After(e.expiresAt) {
+				delete(c.cache, k)
+			}
+		}
+	}
 	c.cache[key] = releaseCacheEntry{data: v, expiresAt: time.Now().Add(c.ttl)}
 }
 
@@ -95,9 +109,13 @@ func (c *GitHubClient) GetRelease(ctx context.Context, owner, repo, tag string) 
 
 	var path string
 	if tag == "" {
-		path = fmt.Sprintf("/repos/%s/%s/releases/latest", owner, repo)
+		path = fmt.Sprintf("/repos/%s/%s/releases/latest",
+			url.PathEscape(owner), url.PathEscape(repo))
 	} else {
-		path = fmt.Sprintf("/repos/%s/%s/releases/tags/%s", owner, repo, tag)
+		// PathEscape the tag so characters valid in git refs but URL-special
+		// (#, ?, %, +) don't silently corrupt the path (# → fragment, ? → query).
+		path = fmt.Sprintf("/repos/%s/%s/releases/tags/%s",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(tag))
 	}
 
 	var rel GitHubRelease
@@ -120,7 +138,8 @@ func (c *GitHubClient) ListReleases(ctx context.Context, owner, repo string, lim
 	if v, ok := c.cacheGet(key); ok {
 		return v.([]GitHubRelease), nil
 	}
-	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=%d", owner, repo, limit)
+	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=%d",
+		url.PathEscape(owner), url.PathEscape(repo), limit)
 	var releases []GitHubRelease
 	if err := c.doJSON(ctx, path, &releases); err != nil {
 		return nil, err

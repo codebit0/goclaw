@@ -178,13 +178,24 @@ func UninstallPackage(ctx context.Context, dep string) (bool, string) {
 		if gh == nil {
 			return false, "github installer not configured"
 		}
-		// Accept either "github:name" (manifest name only) or the full "github:owner/repo[@tag]".
+		// Accept either "github:name" (manifest name only) or the full
+		// "github:owner/repo[@tag]". For the full form we look up the manifest
+		// entry by owner/repo so packages whose binary name differs from the
+		// repo name (e.g. cli/cli → gh) can still be uninstalled via spec.
 		name := strings.TrimPrefix(dep, "github:")
-		// If the caller passed owner/repo form, use the repo name portion; else use as-is.
 		if spec, err := ParseGitHubSpec(dep); err == nil {
 			name = spec.Repo
+			if entries, lerr := gh.List(); lerr == nil {
+				want := spec.Owner + "/" + spec.Repo
+				for _, e := range entries {
+					if strings.EqualFold(e.Repo, want) {
+						name = e.Name
+						break
+					}
+				}
+			}
 		} else if slash := strings.Index(name, "/"); slash >= 0 {
-			// tolerate bare "owner/repo" without the scheme prefix
+			// Tolerate bare "owner/repo" without the scheme prefix.
 			name = name[slash+1:]
 			if at := strings.IndexByte(name, '@'); at >= 0 {
 				name = name[:at]
