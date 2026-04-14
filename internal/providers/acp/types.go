@@ -7,7 +7,7 @@ import "encoding/json"
 type InitializeRequest struct {
 	ProtocolVersion int        `json:"protocolVersion"`
 	ClientInfo      ClientInfo `json:"clientInfo"`
-	Capabilities    ClientCaps `json:"capabilities"`
+	Capabilities    ClientCaps `json:"clientCapabilities"`
 }
 
 type ClientInfo struct {
@@ -71,8 +71,9 @@ type NewSessionResponse struct {
 }
 
 type LoadSessionRequest struct {
-	SessionID string `json:"sessionId"`
-	Cwd       string `json:"cwd,omitempty"`
+	SessionID  string   `json:"sessionId"`
+	Cwd        string   `json:"cwd,omitempty"`
+	McpServers []string `json:"mcpServers"`
 }
 
 type LoadSessionResponse struct {
