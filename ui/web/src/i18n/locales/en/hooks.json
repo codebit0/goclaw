@@ -1,0 +1,108 @@
+{
+  "title": "Agent Hooks",
+  "subtitle": "Lifecycle hooks: block, observe, inject context across agent events",
+  "empty": "No hooks configured yet",
+  "nav": "Hooks",
+  "actions": {
+    "create": "Create hook",
+    "edit": "Edit",
+    "delete": "Delete",
+    "test": "Test",
+    "toggle": "Enable/Disable"
+  },
+  "filters": {
+    "event": "Event",
+    "type": "Handler",
+    "scope": "Scope",
+    "enabled": "Status",
+    "all": "All"
+  },
+  "table": {
+    "name": "Name",
+    "event": "Event",
+    "type": "Handler",
+    "scope": "Scope",
+    "matcher": "Matcher",
+    "enabled": "Enabled",
+    "actions": "Actions"
+  },
+  "form": {
+    "title_create": "Create Hook",
+    "title_edit": "Edit Hook",
+    "event": "Event",
+    "handlerType": "Handler Type",
+    "scope": "Scope",
+    "matcher": "Matcher (regex)",
+    "matcherHint": "Applied to tool name before firing (optional except for prompt)",
+    "ifExpr": "Condition (CEL)",
+    "ifExprHint": "Evaluated against tool_input; cel-go syntax",
+    "timeout": "Timeout (ms)",
+    "onTimeout": "On Timeout",
+    "priority": "Priority",
+    "enabled": "Enabled",
+    "command": "Command",
+    "allowedEnvVars": "Allowed Env Vars",
+    "cwd": "Working Directory",
+    "url": "URL",
+    "method": "HTTP Method",
+    "headers": "Headers",
+    "bodyTemplate": "Body Template",
+    "promptTemplate": "Prompt Template",
+    "model": "Model",
+    "maxInvocationsPerTurn": "Max Invocations per Turn",
+    "save": "Save",
+    "cancel": "Cancel",
+    "commandDisabledTooltip": "Command hooks are only available on Lite edition"
+  },
+  "tabs": {
+    "overview": "Overview",
+    "config": "Config",
+    "test": "Test",
+    "history": "History"
+  },
+  "test": {
+    "title": "Test hook",
+    "sampleEvent": "Sample event",
+    "toolName": "Tool name",
+    "toolInput": "Tool input (JSON)",
+    "rawInput": "Raw input",
+    "fire": "Fire",
+    "firing": "Firing\u2026",
+    "decision": "Decision",
+    "duration": "Duration",
+    "stdout": "Stdout",
+    "stderr": "Stderr",
+    "statusCode": "Status code",
+    "updatedInput": "Updated input (diff)"
+  },
+  "history": {
+    "title": "Execution history",
+    "empty": "No executions yet",
+    "phaseFourNote": "History pagination lands in phase 4",
+    "decision": "Decision",
+    "duration": "Duration",
+    "error": "Error",
+    "timestamp": "When"
+  },
+  "toast": {
+    "created": "Hook created",
+    "updated": "Hook updated",
+    "deleted": "Hook deleted",
+    "toggled": "Hook toggled",
+    "failedCreate": "Failed to create hook",
+    "failedUpdate": "Failed to update hook",
+    "failedDelete": "Failed to delete hook",
+    "failedTest": "Test failed"
+  },
+  "validation": {
+    "promptRequiresMatcher": "Prompt hooks require a matcher or if_expr",
+    "invalidRegex": "Invalid regex",
+    "promptTemplateRequired": "Prompt template is required"
+  },
+  "decision": {
+    "allow": "Allow",
+    "block": "Block",
+    "error": "Error",
+    "timeout": "Timeout"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "title": "Agent Hooks",
+  "subtitle": "生命周期钩子：在 Agent 事件中拦截、观察、注入上下文",
+  "empty": "暂无已配置的钩子",
+  "nav": "Hooks",
+  "actions": {
+    "create": "创建钩子",
+    "edit": "编辑",
+    "delete": "删除",
+    "test": "测试",
+    "toggle": "启用/禁用"
+  },
+  "filters": {
+    "event": "事件",
+    "type": "处理器",
+    "scope": "范围",
+    "enabled": "状态",
+    "all": "全部"
+  },
+  "table": {
+    "name": "名称",
+    "event": "事件",
+    "type": "处理器",
+    "scope": "范围",
+    "matcher": "匹配器",
+    "enabled": "已启用",
+    "actions": "操作"
+  },
+  "form": {
+    "title_create": "创建钩子",
+    "title_edit": "编辑钩子",
+    "event": "事件",
+    "handlerType": "处理器类型",
+    "scope": "范围",
+    "matcher": "匹配器（正则）",
+    "matcherHint": "触发前应用于工具名称（可选，prompt 类型必填）",
+    "ifExpr": "条件（CEL）",
+    "ifExprHint": "对 tool_input 求值；使用 cel-go 语法",
+    "timeout": "超时（毫秒）",
+    "onTimeout": "超时处理",
+    "priority": "优先级",
+    "enabled": "启用",
+    "command": "命令",
+    "allowedEnvVars": "允许的环境变量",
+    "cwd": "工作目录",
+    "url": "URL",
+    "method": "HTTP 方法",
+    "headers": "请求头",
+    "bodyTemplate": "请求体模板",
+    "promptTemplate": "Prompt 模板",
+    "model": "模型",
+    "maxInvocationsPerTurn": "每轮最大调用次数",
+    "save": "保存",
+    "cancel": "取消",
+    "commandDisabledTooltip": "命令钩子仅在 Lite 版本中可用"
+  },
+  "tabs": {
+    "overview": "概览",
+    "config": "配置",
+    "test": "测试",
+    "history": "历史"
+  },
+  "test": {
+    "title": "测试钩子",
+    "sampleEvent": "示例事件",
+    "toolName": "工具名称",
+    "toolInput": "工具输入（JSON）",
+    "rawInput": "原始输入",
+    "fire": "触发",
+    "firing": "触发中\u2026",
+    "decision": "决策",
+    "duration": "耗时",
+    "stdout": "标准输出",
+    "stderr": "标准错误",
+    "statusCode": "状态码",
+    "updatedInput": "已更新输入（差异）"
+  },
+  "history": {
+    "title": "执行历史",
+    "empty": "暂无执行记录",
+    "phaseFourNote": "历史分页将在第 4 阶段实现",
+    "decision": "决策",
+    "duration": "耗时",
+    "error": "错误",
+    "timestamp": "时间"
+  },
+  "toast": {
+    "created": "钩子已创建",
+    "updated": "钩子已更新",
+    "deleted": "钩子已删除",
+    "toggled": "钩子已切换",
+    "failedCreate": "创建钩子失败",
+    "failedUpdate": "更新钩子失败",
+    "failedDelete": "删除钩子失败",
+    "failedTest": "测试失败"
+  },
+  "validation": {
+    "promptRequiresMatcher": "Prompt 钩子需要 matcher 或 if_expr",
+    "invalidRegex": "无效的正则表达式",
+    "promptTemplateRequired": "Prompt 模板为必填项"
+  },
+  "decision": {
+    "allow": "允许",
+    "block": "拦截",
+    "error": "错误",
+    "timeout": "超时"
+  }
+}

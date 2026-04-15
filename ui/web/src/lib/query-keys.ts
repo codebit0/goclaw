@@ -51,6 +51,11 @@ export const queryKeys = {
   cron: {
     all: ["cron"] as const,
   },
+  hooks: {
+    all: ["hooks"] as const,
+    detail: (id: string) => ["hooks", id] as const,
+    history: (id: string) => ["hooks", id, "history"] as const,
+  },
   builtinTools: {
     all: ["builtinTools"] as const,
   },

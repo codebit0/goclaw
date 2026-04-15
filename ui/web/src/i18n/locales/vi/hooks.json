@@ -1,0 +1,108 @@
+{
+  "title": "Agent Hooks",
+  "subtitle": "Hook vòng đời: chặn, quan sát, tiêm context qua các sự kiện agent",
+  "empty": "Chưa có hook nào được cấu hình",
+  "nav": "Hooks",
+  "actions": {
+    "create": "Tạo hook",
+    "edit": "Sửa",
+    "delete": "Xóa",
+    "test": "Kiểm tra",
+    "toggle": "Bật/Tắt"
+  },
+  "filters": {
+    "event": "Sự kiện",
+    "type": "Loại xử lý",
+    "scope": "Phạm vi",
+    "enabled": "Trạng thái",
+    "all": "Tất cả"
+  },
+  "table": {
+    "name": "Tên",
+    "event": "Sự kiện",
+    "type": "Loại xử lý",
+    "scope": "Phạm vi",
+    "matcher": "Bộ lọc",
+    "enabled": "Bật",
+    "actions": "Thao tác"
+  },
+  "form": {
+    "title_create": "Tạo Hook",
+    "title_edit": "Sửa Hook",
+    "event": "Sự kiện",
+    "handlerType": "Loại xử lý",
+    "scope": "Phạm vi",
+    "matcher": "Bộ lọc (regex)",
+    "matcherHint": "Áp dụng cho tên công cụ trước khi kích hoạt (tùy chọn, bắt buộc với prompt)",
+    "ifExpr": "Điều kiện (CEL)",
+    "ifExprHint": "Đánh giá theo tool_input; cú pháp cel-go",
+    "timeout": "Thời gian chờ (ms)",
+    "onTimeout": "Khi hết thời gian",
+    "priority": "Độ ưu tiên",
+    "enabled": "Bật",
+    "command": "Lệnh",
+    "allowedEnvVars": "Biến môi trường được phép",
+    "cwd": "Thư mục làm việc",
+    "url": "URL",
+    "method": "Phương thức HTTP",
+    "headers": "Headers",
+    "bodyTemplate": "Mẫu body",
+    "promptTemplate": "Mẫu prompt",
+    "model": "Mô hình",
+    "maxInvocationsPerTurn": "Số lần gọi tối đa mỗi lượt",
+    "save": "Lưu",
+    "cancel": "Hủy",
+    "commandDisabledTooltip": "Hook command chỉ khả dụng trên phiên bản Lite"
+  },
+  "tabs": {
+    "overview": "Tổng quan",
+    "config": "Cấu hình",
+    "test": "Kiểm tra",
+    "history": "Lịch sử"
+  },
+  "test": {
+    "title": "Kiểm tra hook",
+    "sampleEvent": "Sự kiện mẫu",
+    "toolName": "Tên công cụ",
+    "toolInput": "Đầu vào công cụ (JSON)",
+    "rawInput": "Đầu vào thô",
+    "fire": "Kích hoạt",
+    "firing": "Đang kích hoạt\u2026",
+    "decision": "Quyết định",
+    "duration": "Thời gian",
+    "stdout": "Stdout",
+    "stderr": "Stderr",
+    "statusCode": "Mã trạng thái",
+    "updatedInput": "Đầu vào đã cập nhật (diff)"
+  },
+  "history": {
+    "title": "Lịch sử thực thi",
+    "empty": "Chưa có lần thực thi nào",
+    "phaseFourNote": "Phân trang lịch sử sẽ có trong phase 4",
+    "decision": "Quyết định",
+    "duration": "Thời gian",
+    "error": "Lỗi",
+    "timestamp": "Thời điểm"
+  },
+  "toast": {
+    "created": "Đã tạo hook",
+    "updated": "Đã cập nhật hook",
+    "deleted": "Đã xóa hook",
+    "toggled": "Đã chuyển đổi hook",
+    "failedCreate": "Không thể tạo hook",
+    "failedUpdate": "Không thể cập nhật hook",
+    "failedDelete": "Không thể xóa hook",
+    "failedTest": "Kiểm tra thất bại"
+  },
+  "validation": {
+    "promptRequiresMatcher": "Hook prompt yêu cầu matcher hoặc if_expr",
+    "invalidRegex": "Regex không hợp lệ",
+    "promptTemplateRequired": "Mẫu prompt là bắt buộc"
+  },
+  "decision": {
+    "allow": "Cho phép",
+    "block": "Chặn",
+    "error": "Lỗi",
+    "timeout": "Hết thời gian"
+  }
+}
