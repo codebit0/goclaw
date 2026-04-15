@@ -266,3 +266,18 @@ When implementing or modifying web UI components, follow these rules to ensure m
 - **Timezone:** User timezone stored in Zustand (`useUiStore`). Charts use `formatBucketTz()` from `lib/format.ts` with native `Intl.DateTimeFormat` — no date-fns-tz dependency
 - **ErrorBoundary key:** `AppLayout` uses `<ErrorBoundary key={stableErrorBoundaryKey(pathname)}>` which strips dynamic segments (`/chat/session-A` → `/chat`). NEVER use `key={location.pathname}` on ErrorBoundary/Suspense wrapping `<Outlet>` — it causes full page remount on param changes. Pages with sub-navigation (chat sessions, detail pages) must share a stable key
 - **Route params as source of truth:** For pages with URL params (e.g. `/chat/:sessionKey`), derive state from `useParams()` — do NOT duplicate into `useState`. Dual state causes race conditions between `setState` and `navigate()` leading to UI flash (state bounces: B→A→B). Use optional params (`/chat/:sessionKey?`) instead of two separate routes
+
+## Work Process Rules
+
+- **수정 전 허락 필수:** 어떤 파일이든 실제 변경(Edit/Write) 전에 계획을 먼저 설명하고 확인을 받을 것. 분석·조회는 자유롭게 진행 가능.
+- **DEVNOTE.md 관리:** 중요한 개발 결정사항·아키텍처·연동 구조는 `DEVNOTE.md`에 기록. 지침성 내용은 이 CLAUDE.md에 추가.
+
+## KIS Strategy Builder Integration
+
+KIS strategy builder(`/home/user/KIS/open-trading-api/strategy_builder/`)와 백테스터는 **수동 UI 도구**다. 자동화 실행은 goclaw 에이전트가 담당한다.
+
+- **연동 방식:** REST API 호출이 아닌 **Python 직접 import**
+- **goclaw가 활용하는 KIS 모듈:** `core/` (data_fetcher, indicators, signal, market_schedule), `strategy/`, `strategy_core/`, `agent/`
+- **KIS strategy builder에 자동화 로직 추가 금지** — 스케줄러, 자동 수집, 자동 주문 등은 모두 goclaw 쪽에 구현
+- **마스터파일 자동 수집** (매 영업일 07:30, NXT eligibility 주 1회)은 goclaw가 담당
+- 상세 내용: `DEVNOTE.md` 참고
