@@ -40,9 +40,6 @@
     "onTimeout": "超时处理",
     "priority": "优先级",
     "enabled": "启用",
-    "command": "命令",
-    "allowedEnvVars": "允许的环境变量",
-    "cwd": "工作目录",
     "url": "URL",
     "method": "HTTP 方法",
     "headers": "请求头",
@@ -51,8 +48,7 @@
     "model": "模型",
     "maxInvocationsPerTurn": "每轮最大调用次数",
     "save": "保存",
-    "cancel": "取消",
-    "commandDisabledTooltip": "命令钩子仅在 Lite 版本中可用"
+    "cancel": "取消"
   },
   "tabs": {
     "overview": "概览",

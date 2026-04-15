@@ -41,6 +41,7 @@ function parseHeaders(raw: string | undefined): Record<string, unknown> {
     }
     throw new Error("headers must be a JSON object");
   } catch (err) {
+    // eslint-disable-next-line preserve-caught-error -- JSON.parse error message already captured verbatim in thrown message
     throw new Error(
       "Invalid headers JSON: " + (err instanceof Error ? err.message : String(err)),
     );
@@ -48,13 +49,6 @@ function parseHeaders(raw: string | undefined): Record<string, unknown> {
 }
 
 function buildConfig(data: HookFormData): Record<string, unknown> {
-  if (data.handler_type === "command") {
-    return {
-      command: data.command ?? "",
-      allowed_env_vars: data.allowed_env_vars ? data.allowed_env_vars.split(",").map((s) => s.trim()) : [],
-      cwd: data.cwd ?? "",
-    };
-  }
   if (data.handler_type === "http") {
     return {
       url: data.url ?? "",

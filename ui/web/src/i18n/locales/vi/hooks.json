@@ -40,9 +40,6 @@
     "onTimeout": "Khi hết thời gian",
     "priority": "Độ ưu tiên",
     "enabled": "Bật",
-    "command": "Lệnh",
-    "allowedEnvVars": "Biến môi trường được phép",
-    "cwd": "Thư mục làm việc",
     "url": "URL",
     "method": "Phương thức HTTP",
     "headers": "Headers",
@@ -51,8 +48,7 @@
     "model": "Mô hình",
     "maxInvocationsPerTurn": "Số lần gọi tối đa mỗi lượt",
     "save": "Lưu",
-    "cancel": "Hủy",
-    "commandDisabledTooltip": "Hook command chỉ khả dụng trên phiên bản Lite"
+    "cancel": "Hủy"
   },
   "tabs": {
     "overview": "Tổng quan",

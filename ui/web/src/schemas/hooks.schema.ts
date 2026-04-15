@@ -10,7 +10,10 @@ export const HookEventEnum = z.enum([
   "subagent_stop",
 ]);
 
-export const HookHandlerTypeEnum = z.enum(["command", "http", "prompt"]);
+// `command` deliberately absent: Wave 1 removes UI surface for it. Legacy Standard rows
+// with handler_type="command" are auto-disabled at startup (Phase 07). Lite keeps running
+// existing command hooks via dispatcher but cannot create new ones through the UI.
+export const HookHandlerTypeEnum = z.enum(["http", "prompt"]);
 
 export const HookScopeEnum = z.enum(["global", "tenant", "agent"]);
 
@@ -26,9 +29,6 @@ export const hookFormSchema = z
     priority: z.number().int().min(0).max(1000),
     enabled: z.boolean(),
     // handler-specific config fields
-    command: z.string().optional(),
-    allowed_env_vars: z.string().optional(), // comma-separated
-    cwd: z.string().optional(),
     url: z.string().url().optional().or(z.literal("")),
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
     headers: z.string().optional(), // JSON string

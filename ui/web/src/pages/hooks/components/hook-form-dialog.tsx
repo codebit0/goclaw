@@ -12,12 +12,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { hookFormSchema, type HookFormData } from "@/schemas/hooks.schema";
 import type { HookConfig } from "@/hooks/use-hooks";
-
-// TODO: replace with real edition context once EditionContext is available
-const IS_LITE_EDITION = false;
+import { useAuthStore } from "@/stores/use-auth-store";
 
 const HOOK_EVENTS = [
   "session_start", "user_prompt_submit", "pre_tool_use",
@@ -33,6 +30,11 @@ interface HookFormDialogProps {
 
 export function HookFormDialog({ open, onOpenChange, onSubmit, initial }: HookFormDialogProps) {
   const { t } = useTranslation("hooks");
+  const isMasterScope = useAuthStore((s) => s.isMasterScope);
+  // Global scope hidden for non-master callers; existing `global` hooks still render as-is in edit mode.
+  const scopeOptions = isMasterScope
+    ? (["global", "tenant", "agent"] as const)
+    : (["tenant", "agent"] as const);
 
   const {
     register, control, handleSubmit, watch, reset,
@@ -58,9 +60,13 @@ export function HookFormDialog({ open, onOpenChange, onSubmit, initial }: HookFo
     if (open) {
       if (initial) {
         const cfg = initial.config as Record<string, unknown>;
+        // Legacy `command` rows coerce to `http` in the form — user cannot save as
+        // `command` (enum narrowed post-Wave-1). Phase 07 auto-disables them regardless.
+        const handlerType: HookFormData["handler_type"] =
+          initial.handler_type === "command" ? "http" : initial.handler_type;
         reset({
           event: initial.event as HookFormData["event"],
-          handler_type: initial.handler_type,
+          handler_type: handlerType,
           scope: initial.scope,
           matcher: initial.matcher ?? "",
           if_expr: initial.if_expr ?? "",
@@ -68,9 +74,6 @@ export function HookFormDialog({ open, onOpenChange, onSubmit, initial }: HookFo
           on_timeout: initial.on_timeout,
           priority: initial.priority,
           enabled: initial.enabled,
-          command: (cfg.command as string) ?? "",
-          allowed_env_vars: ((cfg.allowed_env_vars as string[]) ?? []).join(","),
-          cwd: (cfg.cwd as string) ?? "",
           url: (cfg.url as string) ?? "",
           method: (cfg.method as HookFormData["method"]) ?? "POST",
           headers: cfg.headers ? JSON.stringify(cfg.headers) : "",
@@ -115,38 +118,25 @@ export function HookFormDialog({ open, onOpenChange, onSubmit, initial }: HookFo
             )} />
           </div>
 
-          {/* Handler type */}
+          {/* Handler type — `command` intentionally absent post-Wave-1. Lite users keep
+              existing rows but cannot create new ones via UI (DB/CLI path only). */}
           <div className="space-y-1.5">
             <Label>{t("form.handlerType")}</Label>
             <Controller control={control} name="handler_type" render={({ field }) => (
               <RadioGroup value={field.value} onValueChange={field.onChange} className="flex gap-4">
-                {(["command", "http", "prompt"] as const).map((ht) => {
-                  const disabled = ht === "command" && !IS_LITE_EDITION;
-                  const radio = (
-                    <div key={ht} className={`flex items-center gap-1.5 ${disabled ? "opacity-50" : ""}`}>
-                      <RadioGroupItem value={ht} id={`ht-${ht}`} disabled={disabled} />
-                      <Label htmlFor={`ht-${ht}`} className={disabled ? "cursor-not-allowed" : "cursor-pointer"}>
-                        {ht}
-                      </Label>
-                    </div>
-                  );
-                  if (disabled) {
-                    return (
-                      <TooltipProvider key={ht} delayDuration={200}>
-                        <Tooltip>
-                          <TooltipTrigger asChild><span>{radio}</span></TooltipTrigger>
-                          <TooltipContent>{t("form.commandDisabledTooltip")}</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    );
-                  }
-                  return radio;
-                })}
+                {(["http", "prompt"] as const).map((ht) => (
+                  <div key={ht} className="flex items-center gap-1.5">
+                    <RadioGroupItem value={ht} id={`ht-${ht}`} />
+                    <Label htmlFor={`ht-${ht}`} className="cursor-pointer">
+                      {ht}
+                    </Label>
+                  </div>
+                ))}
               </RadioGroup>
             )} />
           </div>
 
-          {/* Scope */}
+          {/* Scope — global hidden for non-master callers (advisory UI hint; backend enforces). */}
           <div className="space-y-1.5">
             <Label>{t("form.scope")}</Label>
             <Controller control={control} name="scope" render={({ field }) => (
@@ -155,7 +145,7 @@ export function HookFormDialog({ open, onOpenChange, onSubmit, initial }: HookFo
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(["global", "tenant", "agent"] as const).map((s) => (
+                  {scopeOptions.map((s) => (
                     <SelectItem key={s} value={s}>{s}</SelectItem>
                   ))}
                 </SelectContent>
@@ -181,23 +171,6 @@ export function HookFormDialog({ open, onOpenChange, onSubmit, initial }: HookFo
           </div>
 
           {/* Handler-specific sub-forms */}
-          {handlerType === "command" && (
-            <div className="space-y-3 rounded-lg border p-3">
-              <div className="space-y-1.5">
-                <Label>{t("form.command")}</Label>
-                <Input {...register("command")} placeholder="/usr/local/bin/hook.sh" className="text-base md:text-sm font-mono" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>{t("form.allowedEnvVars")}</Label>
-                <Input {...register("allowed_env_vars")} placeholder="PATH,HOME" className="text-base md:text-sm" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>{t("form.cwd")}</Label>
-                <Input {...register("cwd")} placeholder="/tmp" className="text-base md:text-sm font-mono" />
-              </div>
-            </div>
-          )}
-
           {handlerType === "http" && (
             <div className="space-y-3 rounded-lg border p-3">
               <div className="space-y-1.5">

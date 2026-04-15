@@ -40,9 +40,6 @@
     "onTimeout": "On Timeout",
     "priority": "Priority",
     "enabled": "Enabled",
-    "command": "Command",
-    "allowedEnvVars": "Allowed Env Vars",
-    "cwd": "Working Directory",
     "url": "URL",
     "method": "HTTP Method",
     "headers": "Headers",
@@ -51,8 +48,7 @@
     "model": "Model",
     "maxInvocationsPerTurn": "Max Invocations per Turn",
     "save": "Save",
-    "cancel": "Cancel",
-    "commandDisabledTooltip": "Command hooks are only available on Lite edition"
+    "cancel": "Cancel"
   },
   "tabs": {
     "overview": "Overview",
