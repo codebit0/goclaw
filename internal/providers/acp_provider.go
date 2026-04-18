@@ -118,6 +118,7 @@ func (p *ACPProvider) sessionReaper() {
 						_ = entry.proc.Cancel(entry.id)
 					}
 					p.acpSessions.Delete(key)
+					p.sessionMu.Delete(key)
 				}
 				return true
 			})
@@ -230,6 +231,15 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 		}, err
 	}
 
+	if promptResp != nil && promptResp.StopReason == "cancelled" {
+		slog.Warn("acp: chat cancelled", "session", sessionKey, "sid", acpSessionID, "updates", updateCount)
+		errMsg := "[요청 취소] 응답 대기 중 타임아웃으로 취소됨"
+		if buf.Len() > 0 {
+			errMsg = buf.String() + "\n\n" + errMsg
+		}
+		return &ChatResponse{Content: errMsg, FinishReason: "stop"}, nil
+	}
+
 	slog.Info("acp: chat completed", "session", sessionKey, "sid", acpSessionID,
 		"stopReason", mapStopReason(promptResp), "updates", updateCount, "contentLen", buf.Len())
 	return &ChatResponse{
@@ -302,6 +312,18 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 			Content:      fmt.Sprintf("[ACP Error] %v", err),
 			FinishReason: "error",
 		}, err
+	}
+
+	if promptResp != nil && promptResp.StopReason == "cancelled" {
+		slog.Warn("acp: chat stream cancelled", "session", sessionKey, "sid", acpSessionID, "updates", updateCount)
+		errMsg := "[요청 취소] 응답 대기 중 타임아웃으로 취소됨"
+		prefix := "\n\n"
+		if buf.Len() == 0 {
+			prefix = ""
+		}
+		onChunk(StreamChunk{Content: prefix + errMsg})
+		onChunk(StreamChunk{Done: true})
+		return &ChatResponse{Content: buf.String() + prefix + errMsg, FinishReason: "stop"}, nil
 	}
 
 	onChunk(StreamChunk{Done: true})

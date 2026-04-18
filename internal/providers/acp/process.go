@@ -176,7 +176,9 @@ func (pp *ProcessPool) spawn(ctx context.Context, poolKey string) (*ACPProcess, 
 
 	cmd := exec.CommandContext(procCtx, pp.agentBinary, pp.agentArgs...)
 	cmd.Dir = pp.workDir
-	cmd.Env = filterACPEnv(os.Environ())
+	cmd.Env = append(filterACPEnv(os.Environ()),
+		"GEMINI_TELEMETRY_ENABLED=false",
+	)
 	cmd.SysProcAttr = sysProcAttr()
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -260,8 +262,8 @@ func (pp *ProcessPool) reapLoop() {
 				proc.mu.Unlock()
 				if idle {
 					slog.Info("acp: reaping idle process", "pool_key", key)
+					pp.processes.Delete(key) // delete before cancel so a concurrent GetOrSpawn sees no stale entry
 					proc.cancel()
-					pp.processes.Delete(key)
 				}
 				return true
 			})
