@@ -5,8 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
+
+// promptInactivityTimeout is the maximum time Prompt() will wait without
+// receiving any session/update notification before cancelling the prompt.
+// Exposed as a package var so tests can shorten it.
+var promptInactivityTimeout = 10 * time.Minute
 
 // Initialize sends the ACP initialize request to establish capabilities.
 func (p *ACPProcess) Initialize(ctx context.Context) error {
@@ -14,7 +20,7 @@ func (p *ACPProcess) Initialize(ctx context.Context) error {
 	defer cancel()
 	req := InitializeRequest{
 		ProtocolVersion: 1,
-		ClientInfo:      ClientInfo{Name: "GoClaw", Version: "1.0"},
+		ClientInfo:      ClientInfo{Name: "", Version: "1.0"},
 		Capabilities:    ClientCaps{},
 	}
 	var resp InitializeResponse
@@ -71,6 +77,10 @@ func (p *ACPProcess) LoadSession(ctx context.Context, sessionID string) (string,
 
 // Prompt sends user content to sessionID and blocks until the agent completes,
 // invoking onUpdate for each session/update notification received.
+//
+// An inactivity watchdog cancels the prompt if no session/update arrives within
+// promptInactivityTimeout. This guards against silent hangs where the ACP agent
+// stops responding without closing the connection.
 func (p *ACPProcess) Prompt(ctx context.Context, sessionID string, content []ContentBlock, onUpdate func(SessionUpdate)) (*PromptResponse, error) {
 	p.inUse.Add(1)
 	defer p.inUse.Add(-1)
@@ -79,8 +89,40 @@ func (p *ACPProcess) Prompt(ctx context.Context, sessionID string, content []Con
 	p.lastActive = time.Now()
 	p.mu.Unlock()
 
-	p.registerUpdateFn(sessionID, onUpdate)
+	// lastActivity is refreshed by every session/update; watchdog fires when stale.
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+
+	watchdogDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastActivity.Load())) > promptInactivityTimeout {
+					slog.Warn("acp: prompt inactivity timeout, cancelling",
+						"sid", sessionID, "timeout", promptInactivityTimeout)
+					_ = p.conn.Notify("session/cancel", CancelNotification{SessionID: sessionID})
+					return
+				}
+			case <-watchdogDone:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Wrap onUpdate to refresh lastActivity on every notification.
+	p.registerUpdateFn(sessionID, func(update SessionUpdate) {
+		lastActivity.Store(time.Now().UnixNano())
+		if onUpdate != nil {
+			onUpdate(update)
+		}
+	})
 	defer p.unregisterUpdateFn(sessionID)
+	defer close(watchdogDone)
 
 	goclawSession := goclawSessionFromCtx(ctx)
 	slog.Info("acp: session/prompt", "session", goclawSession, "sid", sessionID)

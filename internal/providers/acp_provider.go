@@ -115,6 +115,7 @@ func (p *ACPProvider) sessionReaper() {
 				if time.Since(entry.lastUsed) > sessionIdleTTL {
 					slog.Info("acp: expiring idle session", "goclaw_session", key, "sid", entry.id)
 					p.acpSessions.Delete(key)
+					p.sessionMu.Delete(key)
 				}
 				return true
 			})
@@ -221,10 +222,20 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 	})
 	if err != nil {
 		slog.Error("acp: chat error", "session", sessionKey, "sid", acpSessionID, "error", err)
-		return &ChatResponse{
-			Content:      fmt.Sprintf("[ACP Error] %v", err),
-			FinishReason: "error",
-		}, nil
+		errMsg := fmt.Sprintf("[ACP Error] %v", err)
+		if buf.Len() > 0 {
+			errMsg = buf.String() + "\n\n" + errMsg
+		}
+		return &ChatResponse{Content: errMsg, FinishReason: "error"}, nil
+	}
+
+	if promptResp != nil && promptResp.StopReason == "cancelled" {
+		slog.Warn("acp: chat cancelled", "session", sessionKey, "sid", acpSessionID, "updates", updateCount)
+		errMsg := "[요청 취소] 응답 대기 중 타임아웃으로 취소됨"
+		if buf.Len() > 0 {
+			errMsg = buf.String() + "\n\n" + errMsg
+		}
+		return &ChatResponse{Content: errMsg, FinishReason: "stop"}, nil
 	}
 
 	slog.Info("acp: chat completed", "session", sessionKey, "sid", acpSessionID,
@@ -295,10 +306,26 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 	})
 	if err != nil {
 		slog.Error("acp: chat error", "session", sessionKey, "sid", acpSessionID, "error", err)
-		return &ChatResponse{
-			Content:      fmt.Sprintf("[ACP Error] %v", err),
-			FinishReason: "error",
-		}, nil
+		errMsg := fmt.Sprintf("[ACP Error] %v", err)
+		prefix := "\n\n"
+		if buf.Len() == 0 {
+			prefix = ""
+		}
+		onChunk(StreamChunk{Content: prefix + errMsg})
+		onChunk(StreamChunk{Done: true})
+		return &ChatResponse{Content: buf.String() + prefix + errMsg, FinishReason: "error"}, nil
+	}
+
+	if promptResp != nil && promptResp.StopReason == "cancelled" {
+		slog.Warn("acp: chat stream cancelled", "session", sessionKey, "sid", acpSessionID, "updates", updateCount)
+		errMsg := "[요청 취소] 응답 대기 중 타임아웃으로 취소됨"
+		prefix := "\n\n"
+		if buf.Len() == 0 {
+			prefix = ""
+		}
+		onChunk(StreamChunk{Content: prefix + errMsg})
+		onChunk(StreamChunk{Done: true})
+		return &ChatResponse{Content: buf.String() + prefix + errMsg, FinishReason: "stop"}, nil
 	}
 
 	onChunk(StreamChunk{Done: true})
