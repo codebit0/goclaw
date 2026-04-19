@@ -517,3 +517,5 @@ Subagents share the same `SecureCLIStore` as their parent — the credentialed b
 | MCP bridge | `internal/mcp/` | MCP server connections, tool bridge, access grants |
 | Custom tools | `internal/tools/` (`dynamic_loader.go`, `dynamic_tool.go`) | Runtime shell-based custom tool loading and execution |
 | Team tools | `internal/tools/` (`team_tasks_tool.go`, `team_tool_*.go`) | Task board backend, team tool dispatch and cache |
+
+Use `grep` or your editor's symbol search for specific files.

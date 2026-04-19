@@ -560,11 +560,11 @@ The Agent Router manages Loop instances with a cache layer. It supports lazy res
 
 ```mermaid
 flowchart TD
-    GET["Router.Get(agentID)"] --> CACHE{"Cache hit<br/>and TTL valid?"}
+    GET["Router: get agent"] --> CACHE{"Cache hit<br/>and TTL valid?"}
     CACHE -->|Yes| RETURN[Return cached Loop]
     CACHE -->|No or Expired| RESOLVE{"Resolver configured?"}
     RESOLVE -->|No| ERR["Error: agent not found"]
-    RESOLVE -->|Yes| DB["Resolver.Resolve(agentID)<br/>Load from DB, create Loop"]
+    RESOLVE -->|Yes| DB["Resolver: load from DB, create Loop"]
     DB --> STORE[Store in cache with TTL]
     STORE --> RETURN
 ```
@@ -589,12 +589,12 @@ The Resolver lazy-creates Loop instances from PostgreSQL data when the Router en
 
 ```mermaid
 flowchart TD
-    MISS["Router cache miss"] --> LOAD["Step 1: Load agent from DB<br/>AgentStore.GetByKey(agentKey)"]
-    LOAD --> PROV["Step 2: Resolve provider<br/>ProviderRegistry.Get(provider)<br/>Fallback: first provider in registry"]
-    PROV --> BOOT["Step 3: Load bootstrap files<br/>bootstrap.LoadFromStore(agentID)"]
-    BOOT --> DEFAULTS["Step 4: Apply defaults<br/>contextWindow <= 0 then 200K<br/>maxIterations <= 0 then 20"]
-    DEFAULTS --> CREATE["Step 5: Create Loop<br/>NewLoop(LoopConfig)"]
-    CREATE --> WIRE["Step 6: Wire hooks<br/>EnsureUserFilesFunc, ContextFileLoaderFunc"]
+    MISS["Router cache miss"] --> LOAD["Step 1: Load agent from DB"]
+    LOAD --> PROV["Step 2: Resolve provider<br/>Fallback: first provider in registry"]
+    PROV --> BOOT["Step 3: Load bootstrap files from store"]
+    BOOT --> DEFAULTS["Step 4: Apply defaults<br/>contextWindow: 200K, maxIterations: 20"]
+    DEFAULTS --> CREATE["Step 5: Create Loop with resolved config"]
+    CREATE --> WIRE["Step 6: Wire hooks<br/>(user files, context file loader)"]
     WIRE --> DONE["Return Loop to Router for caching"]
 ```
 
