@@ -26,46 +26,68 @@ func (p *ACPProcess) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// resolveCwd returns the provided override if non-empty, otherwise the
+// process pool's default work directory (falling back to CWD as last resort).
+func (p *ACPProcess) resolveCwd(override string) string {
+	if override != "" {
+		return override
+	}
+	if p.workDir != "" {
+		return p.workDir
+	}
+	cwd, _ := filepath.Abs(".")
+	return cwd
+}
+
 // NewSession creates a new ACP session and returns its session ID.
-func (p *ACPProcess) NewSession(ctx context.Context) (string, error) {
+// If cwd is non-empty it is used as the session working directory; otherwise
+// the process pool's workDir is used. Gemini CLI 0.36.x honors the per-session
+// cwd even when it differs from the subprocess spawn directory, enabling
+// per-goclaw-session workspace isolation.
+func (p *ACPProcess) NewSession(ctx context.Context, cwd string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	sessionCwd := p.resolveCwd(cwd)
 
-	cwd := p.workDir
-	if cwd == "" {
-		cwd, _ = filepath.Abs(".")
+	var servers []McpServer
+	if p.mcpServersFn != nil {
+		servers = p.mcpServersFn(ctx)
 	}
-
-	req := NewSessionRequest{
-		Cwd:        cwd,
-		McpServers: []string{},
+	if servers == nil {
+		servers = []McpServer{}
 	}
+	req := NewSessionRequest{Cwd: sessionCwd, McpServers: servers}
 	var resp NewSessionResponse
 	if err := p.conn.Call(ctx, "session/new", req, &resp); err != nil {
 		return "", fmt.Errorf("acp session/new: %w", err)
 	}
-	slog.Info("acp: session/new", "sid", resp.SessionID, "cwd", cwd)
+	slog.Info("acp: session/new", "sid", resp.SessionID, "cwd", sessionCwd, "mcpServers", len(servers))
 	return resp.SessionID, nil
 }
 
 // LoadSession restores a previous ACP session by ID (used after process restart).
 // Returns the session ID to use going forward (may equal the requested ID).
 // Only call if AgentCaps().LoadSession is true.
-func (p *ACPProcess) LoadSession(ctx context.Context, sessionID string) (string, error) {
+// cwd has the same semantics as NewSession — pass the per-goclaw-session
+// directory so tool calls resolve paths against it.
+func (p *ACPProcess) LoadSession(ctx context.Context, sessionID, cwd string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	sessionCwd := p.resolveCwd(cwd)
 
-	cwd := p.workDir
-	if cwd == "" {
-		cwd, _ = filepath.Abs(".")
+	var servers []McpServer
+	if p.mcpServersFn != nil {
+		servers = p.mcpServersFn(ctx)
 	}
-
-	req := LoadSessionRequest{SessionID: sessionID, Cwd: cwd}
+	if servers == nil {
+		servers = []McpServer{}
+	}
+	req := LoadSessionRequest{SessionID: sessionID, Cwd: sessionCwd, McpServers: servers}
 	var resp LoadSessionResponse
 	if err := p.conn.Call(ctx, "session/load", req, &resp); err != nil {
 		return "", fmt.Errorf("acp session/load: %w", err)
 	}
-	slog.Info("acp: session/load", "sid", resp.SessionID)
+	slog.Info("acp: session/load", "sid", resp.SessionID, "cwd", sessionCwd)
 	return resp.SessionID, nil
 }
 
