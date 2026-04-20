@@ -171,23 +171,43 @@ func (p *ACPProvider) ensureSessionDir(proc *acp.ACPProcess, goclawKey string) s
 	return dir
 }
 
+// writeGeminiMD writes the system prompt to GEMINI.md in the session workspace.
+// Gemini CLI reads this file automatically from the session cwd (mirrors writeClaudeMD).
+// Skips write if content is unchanged. Returns true if the file was rewritten,
+// signalling the caller to invalidate the live ACP session so the next request
+// starts a fresh session with the updated instructions.
+func (p *ACPProvider) writeGeminiMD(sessionDir, systemPrompt string) bool {
+	if sessionDir == "" || systemPrompt == "" {
+		return false
+	}
+	path := filepath.Join(sessionDir, "GEMINI.md")
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == systemPrompt {
+		return false
+	}
+	if err := os.WriteFile(path, []byte(systemPrompt), 0600); err != nil {
+		slog.Warn("acp: failed to write GEMINI.md", "path", path, "error", err)
+		return false
+	}
+	return true
+}
+
 // resolveSession returns the ACP session ID for a goclaw session key.
-// It creates a new session if none exists, or reloads it after a process respawn.
+// sessionDir is the pre-computed per-session workspace (caller must ensure it exists).
+// Returns isNew=true only when a brand-new session is created via session/new —
+// callers use this to inject full conversation history into the first prompt.
 // A per-key mutex prevents concurrent creation races for the same session.
-func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, goclawKey string) (string, error) {
+func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, sessionDir, goclawKey string) (sid string, isNew bool, err error) {
 	actual, _ := p.sessionMu.LoadOrStore(goclawKey, &sync.Mutex{})
 	mu := actual.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
-
-	sessionDir := p.ensureSessionDir(proc, goclawKey)
 
 	if val, ok := p.acpSessions.Load(goclawKey); ok {
 		entry := val.(*acpSessionEntry)
 		if entry.proc == proc {
 			// Same process instance: session is still live, just update last-used
 			entry.lastUsed = time.Now()
-			return entry.id, nil
+			return entry.id, false, nil
 		}
 		// Process was respawned — try to restore the session
 		slog.Info("acp: process respawned, attempting session restore",
@@ -196,7 +216,7 @@ func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, 
 			sid, err := proc.LoadSession(ctx, entry.id, sessionDir)
 			if err == nil {
 				p.acpSessions.Store(goclawKey, &acpSessionEntry{id: sid, proc: proc, lastUsed: time.Now()})
-				return sid, nil
+				return sid, false, nil
 			}
 			slog.Warn("acp: session/load failed, creating new session", "old_sid", entry.id, "error", err)
 		}
@@ -204,12 +224,12 @@ func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, 
 	}
 
 	slog.Info("acp: creating new session", "goclaw_session", goclawKey, "pool_key", p.poolKey, "cwd", sessionDir)
-	sid, err := proc.NewSession(ctx, sessionDir)
+	sid, err = proc.NewSession(ctx, sessionDir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	p.acpSessions.Store(goclawKey, &acpSessionEntry{id: sid, proc: proc, lastUsed: time.Now()})
-	return sid, nil
+	return sid, true, nil
 }
 
 func (p *ACPProvider) Name() string         { return p.name }
@@ -241,7 +261,15 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 		return nil, fmt.Errorf("acp: spawn failed: %w", err)
 	}
 
-	acpSessionID, err := p.resolveSession(ctx, proc, sessionKey)
+	sessionDir := p.ensureSessionDir(proc, sessionKey)
+	systemPrompt, _, _ := extractFromMessages(req.Messages)
+	if p.writeGeminiMD(sessionDir, systemPrompt) {
+		// System prompt changed — invalidate live session so next resolveSession
+		// creates a fresh one that loads the updated GEMINI.md.
+		p.acpSessions.Delete(sessionKey)
+	}
+
+	acpSessionID, isNew, err := p.resolveSession(ctx, proc, sessionDir, sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +277,7 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 		defer p.purgeSession(sessionKey)
 	}
 
-	content := extractACPContent(req)
+	content := extractACPContent(req, isNew)
 	if len(content) == 0 {
 		return nil, fmt.Errorf("acp: no user message in request")
 	}
@@ -306,7 +334,13 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 		return nil, fmt.Errorf("acp: spawn failed: %w", err)
 	}
 
-	acpSessionID, err := p.resolveSession(ctx, proc, sessionKey)
+	sessionDir := p.ensureSessionDir(proc, sessionKey)
+	systemPrompt, _, _ := extractFromMessages(req.Messages)
+	if p.writeGeminiMD(sessionDir, systemPrompt) {
+		p.acpSessions.Delete(sessionKey)
+	}
+
+	acpSessionID, isNew, err := p.resolveSession(ctx, proc, sessionDir, sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +348,7 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 		defer p.purgeSession(sessionKey)
 	}
 
-	content := extractACPContent(req)
+	content := extractACPContent(req, isNew)
 	if len(content) == 0 {
 		return nil, fmt.Errorf("acp: no user message in request")
 	}
@@ -406,30 +440,63 @@ func (p *ACPProvider) Close() error {
 	return p.pool.Close()
 }
 
-// extractACPContent extracts user message + images from ChatRequest into ACP ContentBlocks.
-func extractACPContent(req ChatRequest) []acp.ContentBlock {
-	systemPrompt, userMsg, images := extractFromMessages(req.Messages)
-	if userMsg == "" {
+// extractACPContent builds ACP ContentBlocks from a ChatRequest.
+//
+// isNew=false (normal turn): GEMINI.md in the session workspace already provides
+// the system prompt, so only the current user message is sent. This avoids
+// repeating the (often large) system prompt on every turn.
+//
+// isNew=true (fresh or reset session): the session has no prior context.
+// All non-system messages from req.Messages are serialised as a conversation
+// transcript so that compacted summaries and recent history are preserved.
+// The system prompt is omitted here because writeGeminiMD wrote it to GEMINI.md
+// before the session was created.
+func extractACPContent(req ChatRequest, isNew bool) []acp.ContentBlock {
+	msgs := req.Messages
+
+	if !isNew {
+		// Normal turn: send only the current user message.
+		_, userMsg, images := extractFromMessages(msgs)
+		if userMsg == "" {
+			return nil
+		}
+		blocks := []acp.ContentBlock{{Type: "text", Text: userMsg}}
+		for _, img := range images {
+			blocks = append(blocks, acp.ContentBlock{Type: "image", Data: img.Data, MimeType: img.MimeType})
+		}
+		return blocks
+	}
+
+	// New session: serialise full conversation context (summary + history + current).
+	// System prompt is excluded — GEMINI.md handles it.
+	var sb strings.Builder
+	var images []ImageContent
+	for i, m := range msgs {
+		switch m.Role {
+		case "system":
+			continue
+		case "user":
+			if i == len(msgs)-1 {
+				images = m.Images // collect images from last (current) user message
+			}
+			sb.WriteString("[User]\n")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n\n")
+		case "assistant":
+			sb.WriteString("[Assistant]\n")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n\n")
+		}
+	}
+
+	text := strings.TrimRight(sb.String(), "\n")
+	if text == "" {
 		return nil
 	}
-
-	var blocks []acp.ContentBlock
-
-	// Prepend system prompt to user message (ACP agents have no separate system prompt API)
-	text := userMsg
-	if systemPrompt != "" {
-		text = systemPrompt + "\n\n" + userMsg
-	}
-	blocks = append(blocks, acp.ContentBlock{Type: "text", Text: text})
-
+	blocks := []acp.ContentBlock{{Type: "text", Text: text}}
 	for _, img := range images {
-		blocks = append(blocks, acp.ContentBlock{
-			Type:     "image",
-			Data:     img.Data,
-			MimeType: img.MimeType,
-		})
+		blocks = append(blocks, acp.ContentBlock{Type: "image", Data: img.Data, MimeType: img.MimeType})
 	}
-
 	return blocks
 }
 
