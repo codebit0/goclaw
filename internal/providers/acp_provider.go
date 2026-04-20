@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -29,6 +31,7 @@ type ACPProvider struct {
 	defaultModel string
 	permMode     string
 	poolKey      string // key for the shared process in the pool (binary + args)
+	mcpServersFn func(context.Context) []acp.McpServer // resolved per session
 
 	acpSessions sync.Map // goclawSessionKey → *acpSessionEntry
 	sessionMu   sync.Map // goclawSessionKey → *sync.Mutex (prevents concurrent session creation)
@@ -67,6 +70,16 @@ func WithACPPermMode(mode string) ACPOption {
 	}
 }
 
+// WithACPMcpServersFunc registers a callback that returns the MCP server list
+// to send on every session/new and session/load request. The callback receives
+// the request context so it can resolve per-agent servers (e.g. from the MCP
+// store based on agent ID in ctx). Return nil or an empty slice for no servers.
+func WithACPMcpServersFunc(fn func(context.Context) []acp.McpServer) ACPOption {
+	return func(p *ACPProvider) {
+		p.mcpServersFn = fn
+	}
+}
+
 // NewACPProvider creates a provider that orchestrates ACP agents as subprocesses.
 func NewACPProvider(binary string, args []string, workDir string, idleTTL time.Duration, denyPatterns []*regexp.Regexp, opts ...ACPOption) *ACPProvider {
 	// Pool key identifies the shared process: binary + args combination
@@ -96,6 +109,9 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 
 	p.pool = acp.NewProcessPool(binary, args, workDir, idleTTL)
 	p.pool.SetToolHandler(p.bridge.Handle)
+	if p.mcpServersFn != nil {
+		p.pool.SetMcpServersFunc(p.mcpServersFn)
+	}
 
 	go p.sessionReaper()
 	return p
@@ -125,6 +141,33 @@ func (p *ACPProvider) sessionReaper() {
 	}
 }
 
+// ensureSessionDir creates and returns a per-goclaw-session workspace under
+// the process pool's base work directory. Mirrors the claude_cli provider's
+// ensureWorkDir pattern so acp-workspaces layout matches cli-workspaces:
+//
+//	<baseWorkDir>/agent-<name>-ws-direct-<uuid>/
+//
+// Falls back to the pool's workDir (shared) if the base is unset or MkdirAll
+// fails — safer than /tmp since the caller passes Authorization-protected
+// paths to the ACP agent.
+func (p *ACPProvider) ensureSessionDir(proc *acp.ACPProcess, goclawKey string) string {
+	base := proc.WorkDir()
+	if base == "" {
+		return ""
+	}
+	safe := sanitizePathSegment(goclawKey)
+	if safe == "" {
+		return base
+	}
+	dir := filepath.Join(base, safe)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("acp: failed to create per-session workspace, using pool default",
+			"goclaw_session", goclawKey, "dir", dir, "error", err)
+		return base
+	}
+	return dir
+}
+
 // resolveSession returns the ACP session ID for a goclaw session key.
 // It creates a new session if none exists, or reloads it after a process respawn.
 // A per-key mutex prevents concurrent creation races for the same session.
@@ -133,6 +176,8 @@ func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, 
 	mu := actual.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
+
+	sessionDir := p.ensureSessionDir(proc, goclawKey)
 
 	if val, ok := p.acpSessions.Load(goclawKey); ok {
 		entry := val.(*acpSessionEntry)
@@ -145,7 +190,7 @@ func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, 
 		slog.Info("acp: process respawned, attempting session restore",
 			"goclaw_session", goclawKey, "old_sid", entry.id)
 		if proc.AgentCaps().LoadSession {
-			sid, err := proc.LoadSession(ctx, entry.id)
+			sid, err := proc.LoadSession(ctx, entry.id, sessionDir)
 			if err == nil {
 				p.acpSessions.Store(goclawKey, &acpSessionEntry{id: sid, proc: proc, lastUsed: time.Now()})
 				return sid, nil
@@ -155,8 +200,8 @@ func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, 
 		// session/load not supported or failed — fall through to create new
 	}
 
-	slog.Info("acp: creating new session", "goclaw_session", goclawKey, "pool_key", p.poolKey)
-	sid, err := proc.NewSession(ctx)
+	slog.Info("acp: creating new session", "goclaw_session", goclawKey, "pool_key", p.poolKey, "cwd", sessionDir)
+	sid, err := proc.NewSession(ctx, sessionDir)
 	if err != nil {
 		return "", err
 	}
