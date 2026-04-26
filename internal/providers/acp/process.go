@@ -253,7 +253,7 @@ func (pp *ProcessPool) spawn(ctx context.Context, poolKey string) (*ACPProcess, 
 	// Notification handler: log all notifications and dispatch session/update to callers
 	notifyHandler := func(method string, params json.RawMessage) {
 		slog.Info("acp: notification received", "method", method)
-		slog.Debug("acp: notification params", "method", method, "params", string(params))
+		slog.Info("acp: notification params", "method", method, "params", string(params))
 		if method == "session/update" {
 			var update SessionUpdate
 			if err := json.Unmarshal(params, &update); err != nil {

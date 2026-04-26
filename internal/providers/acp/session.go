@@ -68,6 +68,14 @@ func (p *ACPProcess) NewSession(ctx context.Context, cwd string) (string, error)
 		return "", fmt.Errorf("acp session/new: %w", err)
 	}
 	slog.Info("acp: session/new", "sid", resp.SessionID, "cwd", sessionCwd, "mcpServers", len(servers))
+	for _, s := range servers {
+		switch sv := s.(type) {
+		case McpServerHTTP:
+			slog.Info("acp: mcp server (http)", "name", sv.Name, "url", sv.URL, "headers", len(sv.Headers))
+		case McpServerStdio:
+			slog.Info("acp: mcp server (stdio)", "name", sv.Name, "command", sv.Command, "args", sv.Args)
+		}
+	}
 	return resp.SessionID, nil
 }
 
@@ -144,6 +152,11 @@ func (p *ACPProcess) Prompt(ctx context.Context, sessionID string, content []Con
 	// Wrap onUpdate to refresh lastActivity on every notification.
 	p.registerUpdateFn(sessionID, func(update SessionUpdate) {
 		lastActivity.Store(time.Now().UnixNano())
+		if update.ToolCall != nil {
+			slog.Info("acp: tool call update", "sid", sessionID, "tool", update.ToolCall.Name, "status", update.ToolCall.Status, "id", update.ToolCall.ID)
+		} else if update.Kind != "" {
+			slog.Info("acp: session update", "sid", sessionID, "kind", update.Kind, "sessionUpdate", update.Update.SessionUpdate, "status", update.Update.Status)
+		}
 		if onUpdate != nil {
 			onUpdate(update)
 		}
@@ -152,7 +165,15 @@ func (p *ACPProcess) Prompt(ctx context.Context, sessionID string, content []Con
 	defer close(watchdogDone)
 
 	goclawSession := goclawSessionFromCtx(ctx)
-	slog.Info("acp: session/prompt", "session", goclawSession, "sid", sessionID)
+	var contentPreview string
+	if len(content) > 0 && content[0].Type == "text" {
+		if len(content[0].Text) > 200 {
+			contentPreview = content[0].Text[:200] + "..."
+		} else {
+			contentPreview = content[0].Text
+		}
+	}
+	slog.Info("acp: session/prompt", "session", goclawSession, "sid", sessionID, "blocks", len(content), "preview", contentPreview)
 	req := PromptRequest{
 		SessionID: sessionID,
 		Prompt:    content,

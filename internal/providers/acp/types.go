@@ -254,3 +254,35 @@ type RequestPermissionRequest struct {
 type RequestPermissionResponse struct {
 	Outcome string `json:"outcome"` // "proceed_always", "approved", "denied"
 }
+
+// SessionRequestPermissionRequest is sent by Gemini CLI (method "session/request_permission")
+// to request approval before executing an MCP tool.
+type SessionRequestPermissionRequest struct {
+	SessionID string             `json:"sessionId"`
+	Options   []SessionPermOpt   `json:"options"`
+	ToolCall  SessionPermTool    `json:"toolCall"`
+}
+
+type SessionPermOpt struct {
+	OptionID string `json:"optionId"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+}
+
+type SessionPermTool struct {
+	ToolCallID string `json:"toolCallId"`
+	Status     string `json:"status"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind,omitempty"`
+}
+
+// SessionRequestPermissionResponse matches Gemini CLI's RequestPermissionResponseSchema.
+// Wire format: {"outcome":{"outcome":"cancelled"}} or {"outcome":{"outcome":"selected","optionId":"..."}}
+type SessionRequestPermissionResponse struct {
+	Outcome SessionPermOutcome `json:"outcome"`
+}
+
+type SessionPermOutcome struct {
+	Outcome  string `json:"outcome"`           // "cancelled" or "selected"
+	OptionID string `json:"optionId,omitempty"` // required when outcome="selected"
+}

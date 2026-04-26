@@ -135,6 +135,12 @@ func (tb *ToolBridge) Handle(ctx context.Context, method string, params json.Raw
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 		return tb.handlePermission(ctx, req)
+	case "session/request_permission":
+		var req SessionRequestPermissionRequest
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		return tb.handleSessionPermission(ctx, req)
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
@@ -166,6 +172,54 @@ func (tb *ToolBridge) writeFile(req WriteTextFileRequest) (*WriteTextFileRespons
 		return nil, fmt.Errorf("write failed: %w", err)
 	}
 	return &WriteTextFileResponse{}, nil
+}
+
+// handleSessionPermission handles Gemini CLI's "session/request_permission" ACP method.
+// Gemini CLI expects a nested outcome object that differs from the generic "permission/request" format.
+// Responding with "proceed_always_server" adds the entire goclaw-bridge server to Gemini's
+// allowlist so all subsequent tool calls in the session skip the confirmation step.
+func (tb *ToolBridge) handleSessionPermission(ctx context.Context, req SessionRequestPermissionRequest) (*SessionRequestPermissionResponse, error) {
+	session := goclawSessionFromCtx(ctx)
+
+	available := make(map[string]bool, len(req.Options))
+	for _, opt := range req.Options {
+		available[opt.OptionID] = true
+	}
+
+	switch tb.permMode {
+	case "deny-all":
+		slog.Warn("security.tool_denied", "session", session, "tool", req.ToolCall.Title, "reason", "deny-all")
+		return &SessionRequestPermissionResponse{
+			Outcome: SessionPermOutcome{Outcome: "cancelled"},
+		}, nil
+	case "approve-reads":
+		lower := strings.ToLower(req.ToolCall.Title)
+		if strings.Contains(lower, "read") || strings.Contains(lower, "glob") ||
+			strings.Contains(lower, "grep") || strings.Contains(lower, "search") ||
+			strings.Contains(lower, "list") || strings.Contains(lower, "view") {
+			slog.Info("security.tool_granted", "session", session, "tool", req.ToolCall.Title, "mode", "approve-reads")
+			return &SessionRequestPermissionResponse{
+				Outcome: SessionPermOutcome{Outcome: "selected", OptionID: "proceed_once"},
+			}, nil
+		}
+		slog.Warn("security.tool_denied", "session", session, "tool", req.ToolCall.Title, "reason", "approve-reads:write-blocked")
+		return &SessionRequestPermissionResponse{
+			Outcome: SessionPermOutcome{Outcome: "cancelled"},
+		}, nil
+	default: // "approve-all"
+		// Prefer server-wide approval so all subsequent goclaw-bridge tool calls skip confirmation.
+		optionID := "proceed_once"
+		for _, pref := range []string{"proceed_always_server", "proceed_always_tool", "proceed_once"} {
+			if available[pref] {
+				optionID = pref
+				break
+			}
+		}
+		slog.Info("security.tool_granted", "session", session, "tool", req.ToolCall.Title, "mode", "approve-all", "optionId", optionID)
+		return &SessionRequestPermissionResponse{
+			Outcome: SessionPermOutcome{Outcome: "selected", OptionID: optionID},
+		}, nil
+	}
 }
 
 // handlePermission responds to permission requests based on configured mode.

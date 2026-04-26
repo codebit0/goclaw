@@ -320,6 +320,9 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 	var buf strings.Builder
 	var updateCount int
 	cb := func(update acp.SessionUpdate) {
+		if update.ToolCall != nil {
+			slog.Info("acp: tool call (chat)", "name", update.ToolCall.Name, "status", update.ToolCall.Status, "id", update.ToolCall.ID)
+		}
 		if update.Message != nil {
 			for _, block := range update.Message.Content {
 				if block.Type == "text" {
@@ -432,8 +435,8 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 				}
 			}
 		}
-		if update.ToolCall != nil && update.ToolCall.Status == "running" {
-			slog.Debug("acp: tool call", "name", update.ToolCall.Name)
+		if update.ToolCall != nil {
+			slog.Info("acp: tool call (stream)", "name", update.ToolCall.Name, "status", update.ToolCall.Status, "id", update.ToolCall.ID)
 		}
 	}
 

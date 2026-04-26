@@ -306,9 +306,11 @@ func bridgeContextMiddleware(gatewayToken string, agentStore store.AgentStore, n
 // tokenAuthMiddleware wraps an http.Handler with Bearer token authentication.
 func tokenAuthMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("http: incoming request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "agent_id", r.Header.Get("X-Agent-ID"))
 		auth := r.Header.Get("Authorization")
 		provided := strings.TrimPrefix(auth, "Bearer ")
 		if !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			slog.Warn("http: unauthorized request", "path", r.URL.Path, "remote", r.RemoteAddr)
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
