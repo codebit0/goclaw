@@ -19,15 +19,16 @@ type ACPProcess struct {
 	cmd  *exec.Cmd
 	conn *Conn
 
-	agentCaps    AgentCaps
-	workDir      string
-	mcpServersFn func(context.Context) []McpServer // invoked on every session/new + session/load
-	lastActive   time.Time
-	inUse      atomic.Int32 // >0 means at least one prompt is active — reaper must skip
-	mu         sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
-	exited     chan struct{} // closed when process exits
+	agentCaps     AgentCaps
+	workDir       string
+	mcpServersFn  func(context.Context) []McpServer // invoked on every session/new + session/load
+	promptTimeout time.Duration                     // overrides promptInactivityTimeout when non-zero
+	lastActive    time.Time
+	inUse         atomic.Int32 // >0 means at least one prompt is active — reaper must skip
+	mu            sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	exited        chan struct{} // closed when process exits
 
 	// updateFns routes session/update notifications to the correct active prompt.
 	updateFns map[string]func(SessionUpdate)
@@ -113,17 +114,18 @@ func (p *ACPProcess) dispatchUpdate(update SessionUpdate) {
 // Typically a single shared process is used (poolKey = binary identifier),
 // and multiple ACP sessions are multiplexed over it.
 type ProcessPool struct {
-	processes   sync.Map // poolKey → *ACPProcess
-	spawnMu     sync.Map // poolKey → *sync.Mutex — prevents concurrent spawn
-	agentBinary  string
-	agentArgs    []string
-	workDir      string
-	mcpServersFn func(context.Context) []McpServer // resolved per session/new + session/load
-	idleTTL      time.Duration
-	mu          sync.RWMutex // protects toolHandler
-	toolHandler RequestHandler
-	done        chan struct{}
-	closeOnce   sync.Once
+	processes     sync.Map // poolKey → *ACPProcess
+	spawnMu       sync.Map // poolKey → *sync.Mutex — prevents concurrent spawn
+	agentBinary   string
+	agentArgs     []string
+	workDir       string
+	mcpServersFn  func(context.Context) []McpServer // resolved per session/new + session/load
+	idleTTL       time.Duration
+	promptTimeout time.Duration
+	mu            sync.RWMutex // protects toolHandler, mcpServersFn, promptTimeout
+	toolHandler   RequestHandler
+	done          chan struct{}
+	closeOnce     sync.Once
 }
 
 // NewProcessPool creates a pool that spawns ACP agents as subprocesses.
@@ -154,6 +156,20 @@ func (pp *ProcessPool) getMcpServersFn() func(context.Context) []McpServer {
 	pp.mu.RLock()
 	defer pp.mu.RUnlock()
 	return pp.mcpServersFn
+}
+
+// SetPromptTimeout sets the inactivity timeout used by Prompt() watchdogs in
+// newly spawned processes. Existing processes are not affected.
+func (pp *ProcessPool) SetPromptTimeout(d time.Duration) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	pp.promptTimeout = d
+}
+
+func (pp *ProcessPool) getPromptTimeout() time.Duration {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+	return pp.promptTimeout
 }
 
 // SetToolHandler sets the agent→client request handler (tool bridge).
@@ -224,13 +240,14 @@ func (pp *ProcessPool) spawn(ctx context.Context, poolKey string) (*ACPProcess, 
 	}
 
 	proc := &ACPProcess{
-		cmd:          cmd,
-		lastActive:   time.Now(),
-		ctx:          procCtx,
-		cancel:       cancel,
-		exited:       make(chan struct{}),
-		workDir:      pp.workDir,
-		mcpServersFn: pp.getMcpServersFn(),
+		cmd:           cmd,
+		lastActive:    time.Now(),
+		ctx:           procCtx,
+		cancel:        cancel,
+		exited:        make(chan struct{}),
+		workDir:       pp.workDir,
+		mcpServersFn:  pp.getMcpServersFn(),
+		promptTimeout: pp.getPromptTimeout(),
 	}
 
 	// Notification handler: log all notifications and dispatch session/update to callers
