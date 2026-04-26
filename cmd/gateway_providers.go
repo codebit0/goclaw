@@ -649,6 +649,9 @@ func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData, ga
 		providers.WithACPName(p.Name),
 		providers.WithACPModel(p.Name),
 	}
+	if settings.PermMode != "" {
+		acpOpts = append(acpOpts, providers.WithACPPermMode(settings.PermMode))
+	}
 	if fn := buildACPMcpServersFunc(gatewayAddr, gatewayToken, lookup); fn != nil {
 		acpOpts = append(acpOpts, providers.WithACPMcpServersFunc(fn))
 	}

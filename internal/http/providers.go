@@ -33,8 +33,9 @@ type ProvidersHandler struct {
 	cliMu           sync.Mutex                       // serializes Claude CLI provider create to prevent duplicates
 	msgBus          *bus.MessageBus
 	sysConfigStore  store.SystemConfigStore
-	tracingStore    store.TracingStore   // optional: for provider-scoped pool activity
-	agents          store.AgentCRUDStore // optional: for provider pool activity agent lookup
+	tracingStore    store.TracingStore        // optional: for provider-scoped pool activity
+	agents          store.AgentCRUDStore      // optional: for provider pool activity agent lookup
+	acpRegisterFn   func(*store.LLMProviderData) // optional: hot-reload ACP providers without restart
 }
 
 // NewProvidersHandler creates a handler for provider management endpoints.
@@ -73,6 +74,13 @@ func (h *ProvidersHandler) SetTracingStore(ts store.TracingStore) {
 // SetAgentStore sets the agent store for provider pool activity agent lookup.
 func (h *ProvidersHandler) SetAgentStore(as store.AgentCRUDStore) {
 	h.agents = as
+}
+
+// SetACPRegisterFn sets a callback invoked when an ACP provider is created or updated.
+// The callback should re-register the provider in the in-memory registry so the change
+// takes effect on the next conversation turn without a gateway restart.
+func (h *ProvidersHandler) SetACPRegisterFn(fn func(*store.LLMProviderData)) {
+	h.acpRegisterFn = fn
 }
 
 // resolveAPIBase returns the provider's api_base, falling back to config/env if empty.
@@ -151,9 +159,11 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 	if h.providerReg == nil || !p.Enabled {
 		return
 	}
-	// ACP agents don't need an API key — skip in-memory registration
-	// (ACP providers are registered via gateway_providers.go on startup or restart)
+	// ACP providers use a process pool; delegate registration to the callback wired from cmd/.
 	if p.ProviderType == store.ProviderACP {
+		if h.acpRegisterFn != nil {
+			h.acpRegisterFn(p)
+		}
 		return
 	}
 	// Claude CLI doesn't need an API key — register immediately

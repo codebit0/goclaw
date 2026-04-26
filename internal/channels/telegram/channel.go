@@ -245,8 +245,11 @@ func (c *Channel) Start(ctx context.Context) error {
 				if !ok {
 					if pollCtx.Err() == nil {
 						c.MarkFailed("Polling stopped unexpectedly", "Telegram updates channel closed unexpectedly.", channels.ChannelFailureKindNetwork, true)
+						slog.Warn("telegram polling stopped unexpectedly, queuing for reconnect", "channel", c.Name())
+						c.NotifyDisconnect()
+					} else {
+						slog.Info("telegram updates channel closed")
 					}
-					slog.Info("telegram updates channel closed")
 					return
 				}
 				if update.Message != nil {

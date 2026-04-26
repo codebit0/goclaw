@@ -111,6 +111,11 @@ func (p *ACPProcess) Prompt(ctx context.Context, sessionID string, content []Con
 	p.lastActive = time.Now()
 	p.mu.Unlock()
 
+	timeout := p.promptTimeout
+	if timeout <= 0 {
+		timeout = promptInactivityTimeout
+	}
+
 	// lastActivity is refreshed by every session/update; watchdog fires when stale.
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
@@ -122,9 +127,9 @@ func (p *ACPProcess) Prompt(ctx context.Context, sessionID string, content []Con
 		for {
 			select {
 			case <-ticker.C:
-				if time.Since(time.Unix(0, lastActivity.Load())) > promptInactivityTimeout {
+				if time.Since(time.Unix(0, lastActivity.Load())) > timeout {
 					slog.Warn("acp: prompt inactivity timeout, cancelling",
-						"sid", sessionID, "timeout", promptInactivityTimeout)
+						"sid", sessionID, "timeout", timeout)
 					_ = p.conn.Notify("session/cancel", CancelNotification{SessionID: sessionID})
 					return
 				}

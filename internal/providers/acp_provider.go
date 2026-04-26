@@ -25,13 +25,15 @@ type acpSessionEntry struct {
 // ACPProvider implements Provider by orchestrating ACP-compatible agent subprocesses.
 // One shared Gemini process is used; each goclaw conversation gets its own ACP session.
 type ACPProvider struct {
-	name         string
-	pool         *acp.ProcessPool
-	bridge       *acp.ToolBridge
-	defaultModel string
-	permMode     string
-	poolKey      string // key for the shared process in the pool (binary + args)
-	mcpServersFn func(context.Context) []acp.McpServer // resolved per session
+	name           string
+	pool           *acp.ProcessPool
+	bridge         *acp.ToolBridge
+	defaultModel   string
+	permMode       string
+	poolKey        string // key for the shared process in the pool (binary + args)
+	mcpServersFn   func(context.Context) []acp.McpServer // resolved per session
+	sessionIdleTTL time.Duration                         // idle TTL for ACP session reaper
+	promptTimeout  time.Duration                         // inactivity timeout for Prompt() watchdog
 
 	acpSessions sync.Map // goclawSessionKey → *acpSessionEntry
 	sessionMu   sync.Map // goclawSessionKey → *sync.Mutex (prevents concurrent session creation)
@@ -70,6 +72,26 @@ func WithACPPermMode(mode string) ACPOption {
 	}
 }
 
+// WithACPSessionTTL overrides the idle TTL used by the session reaper.
+// When not set, defaults to the process pool's idleTTL.
+func WithACPSessionTTL(d time.Duration) ACPOption {
+	return func(p *ACPProvider) {
+		if d > 0 {
+			p.sessionIdleTTL = d
+		}
+	}
+}
+
+// WithACPPromptTimeout sets the inactivity timeout for Prompt() watchdogs.
+// Overrides the package-level promptInactivityTimeout (10 min default).
+func WithACPPromptTimeout(d time.Duration) ACPOption {
+	return func(p *ACPProvider) {
+		if d > 0 {
+			p.promptTimeout = d
+		}
+	}
+}
+
 // WithACPMcpServersFunc registers a callback that returns the MCP server list
 // to send on every session/new and session/load request. The callback receives
 // the request context so it can resolve per-agent servers (e.g. from the MCP
@@ -82,20 +104,29 @@ func WithACPMcpServersFunc(fn func(context.Context) []acp.McpServer) ACPOption {
 
 // NewACPProvider creates a provider that orchestrates ACP agents as subprocesses.
 func NewACPProvider(binary string, args []string, workDir string, idleTTL time.Duration, denyPatterns []*regexp.Regexp, opts ...ACPOption) *ACPProvider {
-	// Pool key identifies the shared process: binary + args combination
-	poolKey := binary
-	if len(args) > 0 {
-		poolKey += "|" + strings.Join(args, " ")
-	}
-
 	p := &ACPProvider{
 		name:         "acp",
 		defaultModel: "claude",
-		poolKey:      poolKey,
 		done:         make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// poolKey uniquely identifies a subprocess configuration so that providers
+	// differing in any of the five dimensions always spawn separate processes.
+	// permMode is included explicitly; it is no longer injected into CLI args
+	// because ACP permission/request RPCs are handled entirely by ToolBridge.
+	p.poolKey = fmt.Sprintf("%s|%s|%s|%s|%s",
+		binary,
+		strings.Join(args, " "),
+		workDir,
+		idleTTL,
+		p.permMode,
+	)
+
+	if p.sessionIdleTTL == 0 {
+		p.sessionIdleTTL = idleTTL
 	}
 
 	var bridgeOpts []acp.ToolBridgeOption
@@ -112,15 +143,17 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 	if p.mcpServersFn != nil {
 		p.pool.SetMcpServersFunc(p.mcpServersFn)
 	}
+	if p.promptTimeout > 0 {
+		p.pool.SetPromptTimeout(p.promptTimeout)
+	}
 
 	go p.sessionReaper()
 	return p
 }
 
-// sessionReaper removes ACP sessions idle for more than 30 minutes.
+// sessionReaper removes ACP sessions idle for longer than sessionIdleTTL.
 // This reduces memory on the Gemini process side over time.
 func (p *ACPProvider) sessionReaper() {
-	const sessionIdleTTL = 30 * time.Minute
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -128,8 +161,8 @@ func (p *ACPProvider) sessionReaper() {
 		case <-ticker.C:
 			p.acpSessions.Range(func(key, value any) bool {
 				entry := value.(*acpSessionEntry)
-				if time.Since(entry.lastUsed) > sessionIdleTTL {
-					slog.Info("acp: expiring idle session", "goclaw_session", key, "sid", entry.id)
+				if time.Since(entry.lastUsed) > p.sessionIdleTTL {
+					slog.Info("acp: expiring idle session", "goclaw_session", key, "sid", entry.id, "ttl", p.sessionIdleTTL)
 					p.acpSessions.Delete(key)
 					p.sessionMu.Delete(key)
 				}
@@ -283,7 +316,7 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 
 	var buf strings.Builder
 	var updateCount int
-	promptResp, err := proc.Prompt(ctx, acpSessionID, content, func(update acp.SessionUpdate) {
+	cb := func(update acp.SessionUpdate) {
 		if update.Message != nil {
 			for _, block := range update.Message.Content {
 				if block.Type == "text" {
@@ -292,7 +325,20 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 				}
 			}
 		}
-	})
+	}
+
+	const maxACPRetry = 2
+	var promptResp *acp.PromptResponse
+	for attempt := range maxACPRetry + 1 {
+		buf.Reset()
+		updateCount = 0
+		promptResp, err = proc.Prompt(ctx, acpSessionID, content, cb)
+		if err == nil || !isMalformedFunctionCall(err) {
+			break
+		}
+		slog.Warn("acp: malformed function call, retrying", "attempt", attempt+1, "session", sessionKey, "sid", acpSessionID)
+	}
+
 	if err != nil {
 		slog.Error("acp: chat error", "session", sessionKey, "sid", acpSessionID, "error", err)
 		errMsg := fmt.Sprintf("[ACP Error] %v", err)
@@ -311,12 +357,17 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 		return &ChatResponse{Content: errMsg, FinishReason: "stop"}, nil
 	}
 
+	outputText := buf.String()
 	slog.Info("acp: chat completed", "session", sessionKey, "sid", acpSessionID,
-		"stopReason", mapStopReason(promptResp), "updates", updateCount, "contentLen", buf.Len())
+		"stopReason", mapStopReason(promptResp), "updates", updateCount, "contentLen", len(outputText))
 	return &ChatResponse{
-		Content:      buf.String(),
+		Content:      outputText,
 		FinishReason: mapStopReason(promptResp),
-		Usage:        &Usage{},
+		Usage: &Usage{
+			PromptTokens:     acpInputTokens(req.Messages),
+			CompletionTokens: acpEstimateTokens(outputText),
+			TotalTokens:      acpInputTokens(req.Messages) + acpEstimateTokens(outputText),
+		},
 	}, nil
 }
 
@@ -369,7 +420,7 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 
 	var buf strings.Builder
 	var updateCount int
-	promptResp, err := proc.Prompt(ctx, acpSessionID, content, func(update acp.SessionUpdate) {
+	streamCb := func(update acp.SessionUpdate) {
 		if update.Message != nil {
 			for _, block := range update.Message.Content {
 				if block.Type == "text" {
@@ -382,7 +433,18 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 		if update.ToolCall != nil && update.ToolCall.Status == "running" {
 			slog.Debug("acp: tool call", "name", update.ToolCall.Name)
 		}
-	})
+	}
+
+	const maxACPRetry = 2
+	var promptResp *acp.PromptResponse
+	for attempt := range maxACPRetry + 1 {
+		promptResp, err = proc.Prompt(ctx, acpSessionID, content, streamCb)
+		if err == nil || !isMalformedFunctionCall(err) {
+			break
+		}
+		slog.Warn("acp: malformed function call, retrying", "attempt", attempt+1, "session", sessionKey, "sid", acpSessionID)
+	}
+
 	if err != nil {
 		slog.Error("acp: chat error", "session", sessionKey, "sid", acpSessionID, "error", err)
 		errMsg := fmt.Sprintf("[ACP Error] %v", err)
@@ -408,13 +470,18 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 	}
 
 	onChunk(StreamChunk{Done: true})
+	outputText := buf.String()
 	slog.Info("acp: chat stream completed", "session", sessionKey, "sid", acpSessionID,
-		"stopReason", mapStopReason(promptResp), "updates", updateCount, "contentLen", buf.Len())
+		"stopReason", mapStopReason(promptResp), "updates", updateCount, "contentLen", len(outputText))
 
 	return &ChatResponse{
-		Content:      buf.String(),
+		Content:      outputText,
 		FinishReason: mapStopReason(promptResp),
-		Usage:        &Usage{},
+		Usage: &Usage{
+			PromptTokens:     acpInputTokens(req.Messages),
+			CompletionTokens: acpEstimateTokens(outputText),
+			TotalTokens:      acpInputTokens(req.Messages) + acpEstimateTokens(outputText),
+		},
 	}, nil
 }
 
@@ -433,6 +500,33 @@ func (p *ACPProvider) Close() error {
 	})
 	_ = p.bridge.Close()
 	return p.pool.Close()
+}
+
+// acpAllowedMIME is the set of image MIME types accepted by ACP providers.
+var acpAllowedMIME = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/webp": true,
+	"image/gif":  true,
+}
+
+// acpMaxImageBytes is the maximum decoded image size accepted (5 MB).
+const acpMaxImageBytes = 5 * 1024 * 1024
+
+// appendACPImages appends validated image ContentBlocks to blocks.
+func appendACPImages(blocks []acp.ContentBlock, images []ImageContent) []acp.ContentBlock {
+	for _, img := range images {
+		if !acpAllowedMIME[img.MimeType] {
+			slog.Warn("acp: unsupported image MIME type, skipping", "mime", img.MimeType)
+			continue
+		}
+		if len(img.Data)*3/4 > acpMaxImageBytes {
+			slog.Warn("acp: image too large, skipping", "estimatedBytes", len(img.Data)*3/4, "limit", acpMaxImageBytes)
+			continue
+		}
+		blocks = append(blocks, acp.ContentBlock{Type: "image", Data: img.Data, MimeType: img.MimeType})
+	}
+	return blocks
 }
 
 // extractACPContent builds ACP ContentBlocks from a ChatRequest.
@@ -456,10 +550,7 @@ func extractACPContent(req ChatRequest, isNew bool) []acp.ContentBlock {
 			return nil
 		}
 		blocks := []acp.ContentBlock{{Type: "text", Text: userMsg}}
-		for _, img := range images {
-			blocks = append(blocks, acp.ContentBlock{Type: "image", Data: img.Data, MimeType: img.MimeType})
-		}
-		return blocks
+		return appendACPImages(blocks, images)
 	}
 
 	// New session: serialise full conversation context (summary + history + current).
@@ -489,10 +580,7 @@ func extractACPContent(req ChatRequest, isNew bool) []acp.ContentBlock {
 		return nil
 	}
 	blocks := []acp.ContentBlock{{Type: "text", Text: text}}
-	for _, img := range images {
-		blocks = append(blocks, acp.ContentBlock{Type: "image", Data: img.Data, MimeType: img.MimeType})
-	}
-	return blocks
+	return appendACPImages(blocks, images)
 }
 
 // mapStopReason converts ACP stopReason to GoClaw finish reason.
@@ -503,9 +591,35 @@ func mapStopReason(resp *acp.PromptResponse) string {
 	switch resp.StopReason {
 	case "max_tokens", "maxContextLength":
 		return "length"
-	case "cancelled":
-		return "stop"
-	default:
+	case "tool_use":
+		return "tool_calls"
+	case "error":
+		return "error"
+	default: // end_turn, stop_sequence, cancelled, ""
 		return "stop"
 	}
+}
+
+// isMalformedFunctionCall returns true when err indicates Gemini produced an
+// invalid tool call JSON — a transient model glitch worth retrying.
+func isMalformedFunctionCall(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "malformed function call")
+}
+
+// acpEstimateTokens returns a rough token count from character count (chars/4).
+func acpEstimateTokens(s string) int {
+	n := len(s) / 4
+	if n < 1 && len(s) > 0 {
+		return 1
+	}
+	return n
+}
+
+// acpInputTokens estimates input token count from all messages.
+func acpInputTokens(msgs []Message) int {
+	var total int
+	for _, m := range msgs {
+		total += acpEstimateTokens(m.Content)
+	}
+	return total
 }
