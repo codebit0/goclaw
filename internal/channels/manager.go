@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -12,6 +13,20 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
+
+// reBotToken matches Telegram bot tokens in URLs (bot<id>:<secret>/).
+var reBotToken = regexp.MustCompile(`bot\d+:[A-Za-z0-9_-]+/`)
+
+// MaskBotToken replaces bot tokens in error messages with "bot***/".
+func MaskBotToken(err error) string {
+	if err == nil {
+		return ""
+	}
+	return reBotToken.ReplaceAllString(err.Error(), "bot***/")
+}
+
+// maskBotToken is a package-level alias for backward compatibility.
+func maskBotToken(err error) string { return MaskBotToken(err) }
 
 // watchdogRetrySchedule defines successive wait durations between retry attempts.
 // After the last entry the final value is reused indefinitely.
@@ -117,7 +132,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		m.syncChannelHealthLocked(name, channel)
 		if err := channel.Start(ctx); err != nil {
 			m.recordChannelStartFailureLocked(name, channel, "", err)
-			slog.Error("failed to start channel", "channel", name, "error", err)
+			slog.Error("failed to start channel", "channel", name, "error", maskBotToken(err))
 			info := ClassifyChannelError(err)
 			if info.Retryable {
 				m.failed[name] = &failedEntry{channel: channel}
@@ -454,7 +469,7 @@ func (m *Manager) runWatchdog(ctx context.Context) {
 					fe.attempts++
 					info := ClassifyChannelError(err)
 					m.recordChannelStartFailureLocked(name, fe.channel, "", err)
-					slog.Warn("channel watchdog: retry failed", "channel", name, "attempt", fe.attempts, "error", err)
+					slog.Warn("channel watchdog: retry failed", "channel", name, "attempt", fe.attempts, "error", maskBotToken(err))
 					if !info.Retryable {
 						slog.Error("channel watchdog: non-retryable error, giving up", "channel", name)
 						delete(m.failed, name)
