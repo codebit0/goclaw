@@ -12,14 +12,103 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/providers/acp"
 )
+
+// ACPSettings is the unified configuration shape for ACP-based providers.
+// Both config-based (config.json `providers.acp`) and DB-based (llm_providers.settings JSONB)
+// registration paths populate this struct; all ACP `With*` options consume it as a
+// common argument and pick the field they configure. Fields left zero / empty are
+// treated as "use built-in default" inside each option, so callers only need to set
+// values they want to override.
+//
+// Duration fields (IdleTTL, SessionTTL, PromptTimeout) are stored as strings in the
+// duration syntax accepted by time.ParseDuration ("5m", "30s", etc.) so the same
+// struct shape works for JSON unmarshal (DB JSONB) without custom decoding logic.
+type ACPSettings struct {
+	Name          string         `json:"name,omitempty"`           // provider display name
+	Binary        string         `json:"-"`                        // resolved binary path (DB: api_base column; config: cfg.Binary)
+	Args          []string       `json:"args,omitempty"`           // extra CLI args (excluding goclaw-injected --include-directories)
+	Model         string         `json:"model,omitempty"`          // default model/agent name
+	PermMode      string         `json:"perm_mode,omitempty"`      // tool bridge permission mode
+	IdleTTL       string         `json:"idle_ttl,omitempty"`       // duration string; pool/session reaper idle timeout
+	SessionTTL    string         `json:"session_ttl,omitempty"`    // duration string; session reaper override (else falls back to IdleTTL)
+	PromptTimeout string         `json:"prompt_timeout,omitempty"` // duration string; per-Prompt() inactivity watchdog
+	WorkDir       string         `json:"work_dir,omitempty"`       // process pool base cwd
+	IncludeDirs   []string       `json:"include_directories,omitempty"`
+	MCPData       *MCPConfigData `json:"-"` // MCP bridge config; never in JSONB
+}
+
+// IdleTTLOrDefault parses IdleTTL with a fallback when unset / invalid.
+func (s *ACPSettings) IdleTTLOrDefault(fallback time.Duration) time.Duration {
+	if s == nil || s.IdleTTL == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(s.IdleTTL); err == nil && d > 0 {
+		return d
+	}
+	return fallback
+}
+
+// WorkDirOrDefault returns s.WorkDir or the package default ACP workspace root.
+func (s *ACPSettings) WorkDirOrDefault() string {
+	if s != nil && s.WorkDir != "" {
+		return s.WorkDir
+	}
+	return defaultACPWorkDir()
+}
+
+// defaultACPWorkDir returns the standard ACP process workspace root used when
+// callers don't override via ACPSettings.WorkDir. Located under the resolved
+// data dir so it survives across deployments without leaking outside goclaw.
+func defaultACPWorkDir() string {
+	return filepath.Join(config.ResolvedDataDirFromEnv(), "acp-workspaces")
+}
+
+// defaultGoclawSkillDirs returns the canonical filesystem-backed skill source
+// directories that gemini ACP should expose via --include-directories when no
+// explicit IncludeDirs are configured. Mirrors three of the loader's runtime
+// slots — workspace-relative slots are intentionally omitted because the ACP
+// session cwd lives under acp-workspaces, not the gateway workspace.
+//
+// Sources covered:
+//   - <dataDir>/skills-store      (managedSkillsDir)
+//   - <dataDir>/skills            (globalSkills)
+//   - ~/.agents/skills            (personalAgentSkills)
+func defaultGoclawSkillDirs() []string {
+	dataDir := config.ResolvedDataDirFromEnv()
+	dirs := []string{
+		filepath.Join(dataDir, "skills-store"),
+		filepath.Join(dataDir, "skills"),
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, ".agents", "skills"))
+	}
+	return dirs
+}
 
 // acpSessionEntry tracks a live ACP session for one goclaw conversation.
 type acpSessionEntry struct {
 	id       string       // ACP session ID returned by session/new or session/load
 	proc     *acp.ACPProcess // process that owns this session (for respawn detection)
 	lastUsed time.Time
+}
+
+// acpRoutingKey is the private context key for per-call routing values.
+type acpRoutingKey struct{}
+
+// acpRoutingValues holds values extracted from ChatRequest.Options for MCP bridge headers.
+type acpRoutingValues struct {
+	agentID    string
+	userID     string
+	channel    string
+	chatID     string
+	peerKind   string
+	workspace  string
+	tenantID   string
+	localKey   string
+	sessionKey string
 }
 
 // ACPProvider implements Provider by orchestrating ACP-compatible agent subprocesses.
@@ -31,9 +120,10 @@ type ACPProvider struct {
 	defaultModel   string
 	permMode       string
 	poolKey        string // key for the shared process in the pool (binary + args)
-	mcpServersFn   func(context.Context) []acp.McpServer // resolved per session
+	mcpConfigData  *MCPConfigData                        // MCP bridge config (gateway addr, token, lookup)
 	sessionIdleTTL time.Duration                         // idle TTL for ACP session reaper
 	promptTimeout  time.Duration                         // inactivity timeout for Prompt() watchdog
+	includeDirs    []string                              // candidate dirs appended as --include-directories for gemini
 
 	acpSessions sync.Map // goclawSessionKey → *acpSessionEntry
 	sessionMu   sync.Map // goclawSessionKey → *sync.Mutex (prevents concurrent session creation)
@@ -45,60 +135,100 @@ type ACPProvider struct {
 // ACPOption configures an ACPProvider.
 type ACPOption func(*ACPProvider)
 
-// WithACPName overrides the provider name (default: "acp").
-func WithACPName(name string) ACPOption {
+// All ACP With* options below take a *ACPSettings as a common argument and read
+// only the field they configure. Empty / zero values are treated as "no override"
+// so callers can build one settings struct and pass it to every option without
+// worrying about clobbering defaults set elsewhere.
+
+// WithACPName overrides the provider name (default: "acp"). Reads s.Name.
+func WithACPName(s *ACPSettings) ACPOption {
 	return func(p *ACPProvider) {
-		if name != "" {
-			p.name = name
+		if s == nil || s.Name == "" {
+			return
 		}
+		p.name = s.Name
 	}
 }
 
-// WithACPModel sets the default model/agent name.
-func WithACPModel(model string) ACPOption {
+// WithACPModel sets the default model/agent name. Reads s.Model.
+func WithACPModel(s *ACPSettings) ACPOption {
 	return func(p *ACPProvider) {
-		if model != "" {
-			p.defaultModel = model
+		if s == nil || s.Model == "" {
+			return
 		}
+		p.defaultModel = s.Model
 	}
 }
 
-// WithACPPermMode sets the permission mode for the tool bridge.
-func WithACPPermMode(mode string) ACPOption {
+// WithACPPermMode sets the permission mode for the tool bridge. Reads s.PermMode.
+func WithACPPermMode(s *ACPSettings) ACPOption {
 	return func(p *ACPProvider) {
-		if mode != "" {
-			p.permMode = mode
+		if s == nil || s.PermMode == "" {
+			return
 		}
+		p.permMode = s.PermMode
 	}
 }
 
 // WithACPSessionTTL overrides the idle TTL used by the session reaper.
-// When not set, defaults to the process pool's idleTTL.
-func WithACPSessionTTL(d time.Duration) ACPOption {
+// Reads s.SessionTTL (duration string). When unset/invalid, NewACPProvider
+// falls back to the process pool's idleTTL.
+func WithACPSessionTTL(s *ACPSettings) ACPOption {
 	return func(p *ACPProvider) {
-		if d > 0 {
+		if s == nil || s.SessionTTL == "" {
+			return
+		}
+		if d, err := time.ParseDuration(s.SessionTTL); err == nil && d > 0 {
 			p.sessionIdleTTL = d
 		}
 	}
 }
 
 // WithACPPromptTimeout sets the inactivity timeout for Prompt() watchdogs.
-// Overrides the package-level promptInactivityTimeout (10 min default).
-func WithACPPromptTimeout(d time.Duration) ACPOption {
+// Reads s.PromptTimeout (duration string). When unset/invalid, the
+// package-level promptInactivityTimeout default (10 min) applies.
+func WithACPPromptTimeout(s *ACPSettings) ACPOption {
 	return func(p *ACPProvider) {
-		if d > 0 {
+		if s == nil || s.PromptTimeout == "" {
+			return
+		}
+		if d, err := time.ParseDuration(s.PromptTimeout); err == nil && d > 0 {
 			p.promptTimeout = d
 		}
 	}
 }
 
-// WithACPMcpServersFunc registers a callback that returns the MCP server list
-// to send on every session/new and session/load request. The callback receives
-// the request context so it can resolve per-agent servers (e.g. from the MCP
-// store based on agent ID in ctx). Return nil or an empty slice for no servers.
-func WithACPMcpServersFunc(fn func(context.Context) []acp.McpServer) ACPOption {
+// WithIncludeDirectories registers candidate directories that should be exposed
+// to the agent's filesystem sandbox. The actual binary gating happens in
+// NewACPProvider, which only emits `--include-directories <dir>` pairs for
+// gemini and stat-filters non-existent entries. Storing the list on the
+// provider for non-gemini binaries is harmless (never consumed downstream).
+//
+// When s.IncludeDirs is empty, falls back to the canonical goclaw skill source
+// dirs (skills-store, global skills, personal agent skills) so the typical
+// deployment "just works" without admin needing to enumerate paths.
+func WithIncludeDirectories(s *ACPSettings) ACPOption {
 	return func(p *ACPProvider) {
-		p.mcpServersFn = fn
+		if s == nil {
+			return
+		}
+		dirs := s.IncludeDirs
+		if len(dirs) == 0 {
+			dirs = defaultGoclawSkillDirs()
+		}
+		p.includeDirs = dirs
+	}
+}
+
+// WithACPMCPConfigData registers MCP bridge config (gateway address, token, server lookup).
+// Reads s.MCPData. Mirrors the Claude CLI pattern: provider builds the MCP server
+// list per session using routing values from ChatRequest.Options.
+func WithACPMCPConfigData(s *ACPSettings) ACPOption {
+	return func(p *ACPProvider) {
+		if s == nil || s.MCPData == nil {
+			return
+		}
+		p.mcpConfigData = s.MCPData
 	}
 }
 
@@ -111,6 +241,20 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// Gemini sandbox needs --include-directories to read goclaw skill paths
+	// outside the cwd. Non-gemini binaries (claude, codex) handle filesystem
+	// access differently, so includeDirs is a no-op for them.
+	if filepath.Base(binary) == "gemini" && len(p.includeDirs) > 0 {
+		for _, d := range p.includeDirs {
+			if d == "" {
+				continue
+			}
+			if info, err := os.Stat(d); err == nil && info.IsDir() {
+				args = append(args, "--include-directories", d)
+			}
+		}
 	}
 
 	// poolKey uniquely identifies a subprocess configuration so that providers
@@ -140,8 +284,12 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 
 	p.pool = acp.NewProcessPool(binary, args, workDir, idleTTL)
 	p.pool.SetToolHandler(p.bridge.Handle)
-	if p.mcpServersFn != nil {
-		p.pool.SetMcpServersFunc(p.mcpServersFn)
+	if p.mcpConfigData != nil {
+		cd := p.mcpConfigData
+		p.pool.SetMcpServersFunc(func(ctx context.Context) []acp.McpServer {
+			rv, _ := ctx.Value(acpRoutingKey{}).(acpRoutingValues)
+			return p.buildACPServers(ctx, cd, rv)
+		})
 	}
 	if p.promptTimeout > 0 {
 		p.pool.SetPromptTimeout(p.promptTimeout)
@@ -282,8 +430,118 @@ func (p *ACPProvider) Capabilities() ProviderCapabilities {
 	}
 }
 
+// injectRoutingFromOpts stores all MCP bridge routing values from ChatRequest.Options
+// into ctx. Mirrors Claude CLI's bridgeContextFromOpts pattern: the pipeline sets
+// all Opt* values in loop_pipeline_callbacks.go so they are always available here.
+func injectRoutingFromOpts(ctx context.Context, opts map[string]any) context.Context {
+	return context.WithValue(ctx, acpRoutingKey{}, acpRoutingValues{
+		agentID:    extractStringOpt(opts, OptAgentID),
+		userID:     extractStringOpt(opts, OptUserID),
+		channel:    extractStringOpt(opts, OptChannel),
+		chatID:     extractStringOpt(opts, OptChatID),
+		peerKind:   extractStringOpt(opts, OptPeerKind),
+		workspace:  extractStringOpt(opts, OptWorkspace),
+		tenantID:   extractStringOpt(opts, OptTenantID),
+		localKey:   extractStringOpt(opts, OptLocalKey),
+		sessionKey: extractStringOpt(opts, OptSessionKey),
+	})
+}
+
+// buildACPServers constructs the []acp.McpServer list for session/new.
+// Mirrors buildACPMcpServersFunc but lives inside the provider so it has
+// access to all routing values from ChatRequest.Options via context.
+func (p *ACPProvider) buildACPServers(ctx context.Context, cd *MCPConfigData, rv acpRoutingValues) []acp.McpServer {
+	if cd == nil || cd.GatewayAddr == "" {
+		return nil
+	}
+	safe := func(v string) bool { return !strings.ContainsAny(v, "\r\n\x00") }
+	bridgeURL := fmt.Sprintf("http://%s/mcp/bridge", cd.GatewayAddr)
+
+	headers := []acp.McpServerKV{}
+	if cd.GatewayToken != "" {
+		headers = append(headers, acp.McpServerKV{Name: "Authorization", Value: "Bearer " + cd.GatewayToken})
+	}
+	if rv.agentID != "" && safe(rv.agentID) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Agent-ID", Value: rv.agentID})
+	}
+	if rv.userID != "" && safe(rv.userID) {
+		headers = append(headers, acp.McpServerKV{Name: "X-User-ID", Value: rv.userID})
+	}
+	if rv.channel != "" && safe(rv.channel) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Channel", Value: rv.channel})
+	}
+	if rv.chatID != "" && safe(rv.chatID) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Chat-ID", Value: rv.chatID})
+	}
+	if rv.peerKind != "" && safe(rv.peerKind) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Peer-Kind", Value: rv.peerKind})
+	}
+	if rv.workspace != "" && safe(rv.workspace) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Workspace", Value: rv.workspace})
+	}
+	if rv.tenantID != "" && safe(rv.tenantID) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Tenant-ID", Value: rv.tenantID})
+	}
+	if rv.localKey != "" && safe(rv.localKey) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Local-Key", Value: rv.localKey})
+	}
+	if rv.sessionKey != "" && safe(rv.sessionKey) {
+		headers = append(headers, acp.McpServerKV{Name: "X-Session-Key", Value: rv.sessionKey})
+	}
+	if cd.GatewayToken != "" && (rv.agentID != "" || rv.userID != "") {
+		sig := SignBridgeContext(cd.GatewayToken, rv.agentID, rv.userID, rv.channel, rv.chatID, rv.peerKind, rv.workspace, rv.tenantID, rv.localKey, rv.sessionKey)
+		headers = append(headers, acp.McpServerKV{Name: "X-Bridge-Sig", Value: sig})
+	}
+
+	servers := []acp.McpServer{acp.McpServerHTTP{
+		Type:    "http",
+		Name:    "goclaw-bridge",
+		URL:     bridgeURL,
+		Headers: headers,
+	}}
+
+	if cd.AgentMCPLookup != nil && rv.agentID != "" {
+		for _, entry := range cd.AgentMCPLookup(ctx, rv.agentID) {
+			servers = append(servers, acpServerEntryToMCP(entry))
+		}
+	}
+	return servers
+}
+
+// acpServerEntryToMCP converts an MCPServerEntry to the ACP schema.
+func acpServerEntryToMCP(e MCPServerEntry) acp.McpServer {
+	if e.Transport == "stdio" {
+		env := make([]acp.McpServerKV, 0, len(e.Env))
+		for k, v := range e.Env {
+			env = append(env, acp.McpServerKV{Name: k, Value: v})
+		}
+		args := e.Args
+		if args == nil {
+			args = []string{}
+		}
+		return acp.McpServerStdio{
+			Type:    "stdio",
+			Name:    e.Name,
+			Command: e.Command,
+			Args:    args,
+			Env:     env,
+		}
+	}
+	headers := make([]acp.McpServerKV, 0, len(e.Headers))
+	for k, v := range e.Headers {
+		headers = append(headers, acp.McpServerKV{Name: k, Value: v})
+	}
+	return acp.McpServerHTTP{
+		Type:    "http",
+		Name:    e.Name,
+		URL:     e.URL,
+		Headers: headers,
+	}
+}
+
 // Chat sends a prompt and returns the complete response (non-streaming).
 func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	ctx = injectRoutingFromOpts(ctx, req.Options)
 	sessionKey := extractStringOpt(req.Options, OptSessionKey)
 	if sessionKey == "" {
 		sessionKey = fmt.Sprintf("temp-%d", time.Now().UnixNano())
@@ -378,6 +636,7 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 
 // ChatStream sends a prompt and streams response chunks via onChunk callback.
 func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk func(StreamChunk)) (*ChatResponse, error) {
+	ctx = injectRoutingFromOpts(ctx, req.Options)
 	sessionKey := extractStringOpt(req.Options, OptSessionKey)
 	if sessionKey == "" {
 		sessionKey = fmt.Sprintf("temp-%d", time.Now().UnixNano())

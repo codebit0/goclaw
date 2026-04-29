@@ -67,13 +67,12 @@ func wireHTTP(stores *store.Stores, defaultWorkspace, dataDir, bundledSkillsDir 
 		if stores.SystemConfigs != nil {
 			providersH.SetSystemConfigStore(stores.SystemConfigs)
 		}
-		var acpMCPLookup providers.MCPServerLookup
 		if stores.MCP != nil {
 			providersH.SetMCPServerLookup(buildMCPServerLookup(stores.MCP))
-			acpMCPLookup = buildACPMCPServerLookup(stores.MCP)
 		}
-		providersH.SetACPRegisterFn(func(p *store.LLMProviderData) {
-			registerACPFromDB(providerReg, *p, gatewayAddr, gatewayToken, acpMCPLookup, defaultWorkspace)
+		acpMCPData = buildACPMCPData(gatewayAddr, gatewayToken, stores.MCP)
+		providersH.SetProviderReloadFn(func(p *store.LLMProviderData) {
+			registerACPFromDB(providerReg, *p)
 		})
 		if stores.Tracing != nil {
 			providersH.SetTracingStore(stores.Tracing)

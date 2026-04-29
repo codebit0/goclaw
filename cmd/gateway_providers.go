@@ -3,14 +3,11 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,10 +15,39 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/oauth"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
-	"github.com/nextlevelbuilder/goclaw/internal/providers/acp"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
+
+// acpMCPData is the package-level MCP bridge config consumed by
+// registerACPFromConfig and registerACPFromDB. Callers populate it via
+// buildACPMCPData before invoking either register* — keeping these functions
+// at their original 2-arg signatures (registry + cfg/p) and making
+// hot-reload paths idempotent (they refresh this var before re-registering).
+//
+// Single-process gateway scope means a package-level var is acceptable here:
+// gateway addr/token/MCPStore are fixed for the lifetime of the binary, and
+// the four set-sites (startup config, startup DB iteration, two hot-reload
+// closures) all derive identical values.
+var acpMCPData *providers.MCPConfigData
+
+// buildACPMCPData assembles the MCP bridge config consumed by ACP providers.
+// Returns nil when no gateway addr is available, which makes downstream
+// settings.MCPData nil and the ACP provider skip MCP server injection.
+// mcpStore is optional — when non-nil, the AgentMCPLookup closure is attached
+// so per-agent MCP servers are surfaced to the ACP subprocess at session/new
+// time (DB-registered providers only; config-based providers run without
+// per-agent MCP).
+func buildACPMCPData(gatewayAddr, gatewayToken string, mcpStore store.MCPServerStore) *providers.MCPConfigData {
+	if gatewayAddr == "" {
+		return nil
+	}
+	data := providers.BuildCLIMCPConfigData(nil, gatewayAddr, gatewayToken)
+	if mcpStore != nil {
+		data.AgentMCPLookup = buildMCPServerLookup(mcpStore)
+	}
+	return data
+}
 
 // loopbackAddr normalizes a gateway address for local connections.
 // CLI processes on the same machine can't connect to 0.0.0.0 on some OSes.
@@ -204,7 +230,8 @@ func registerProviders(registry *providers.Registry, cfg *config.Config, modelRe
 
 	// ACP provider (config-based) — orchestrates any ACP-compatible agent binary
 	if cfg.Providers.ACP.Binary != "" {
-		registerACPFromConfig(registry, cfg.Providers.ACP, gatewayAddr, cfg.Gateway.Token, cfg.Agents.Defaults.Workspace)
+		acpMCPData = buildACPMCPData(gatewayAddr, cfg.Gateway.Token, nil)
+		registerACPFromConfig(registry, cfg.Providers.ACP)
 	}
 }
 
@@ -280,6 +307,7 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 		slog.Warn("failed to load providers from DB", "error", err)
 		return
 	}
+	acpMCPData = buildACPMCPData(gatewayAddr, gatewayToken, mcpStore)
 	for _, p := range dbProviders {
 		// Claude CLI doesn't need API key
 		if !p.Enabled {
@@ -313,7 +341,7 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 		}
 		// ACP provider — no API key needed (agents manage their own auth).
 		if p.ProviderType == store.ProviderACP {
-			registerACPFromDB(registry, p, gatewayAddr, gatewayToken, buildACPMCPServerLookup(mcpStore), cfg.Agents.Defaults.Workspace)
+			registerACPFromDB(registry, p)
 			continue
 		}
 		// Local Ollama requires no API key — handle before the key guard (same pattern as ClaudeCLI).
@@ -415,191 +443,44 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 }
 
 // registerACPFromConfig registers an ACP provider from config file settings.
-// workspace is the gateway-level default workspace (cfg.Agents.Defaults.Workspace),
-// used to compute --include-directories for workspace-relative skill slots.
-func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig, gatewayAddr, gatewayToken, workspace string) {
+// All ACP options consume one shared *providers.ACPSettings populated from cfg;
+// per-binary defaults (e.g. gemini's --include-directories) are applied inside
+// the relevant With* option in the providers package. The MCP bridge config
+// is read from the package-level acpMCPData (set by callers via
+// buildACPMCPData before invocation).
+func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig) {
 	if _, err := exec.LookPath(cfg.Binary); err != nil {
 		slog.Warn("acp: binary not found, skipping", "binary", cfg.Binary, "error", err)
 		return
 	}
-	idleTTL := 5 * time.Minute
-	if cfg.IdleTTL != "" {
-		if d, err := time.ParseDuration(cfg.IdleTTL); err == nil {
-			idleTTL = d
-		}
+	settings := &providers.ACPSettings{
+		Binary:   cfg.Binary,
+		Args:     cfg.Args,
+		Model:    cfg.Model,
+		PermMode: cfg.PermMode,
+		IdleTTL:  cfg.IdleTTL,
+		WorkDir:  cfg.WorkDir,
+		MCPData:  acpMCPData,
 	}
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir = defaultACPWorkDir()
-	}
-	var opts []providers.ACPOption
-	if cfg.Model != "" {
-		opts = append(opts, providers.WithACPModel(cfg.Model))
-	}
-	if cfg.PermMode != "" {
-		opts = append(opts, providers.WithACPPermMode(cfg.PermMode))
-	}
-	if fn := buildACPMcpServersFunc(gatewayAddr, gatewayToken, nil); fn != nil {
-		opts = append(opts, providers.WithACPMcpServersFunc(fn))
-	}
-	finalArgs := enrichGeminiACPArgs(cfg.Binary, cfg.Args, workspace)
 	registry.Register(providers.NewACPProvider(
-		cfg.Binary, finalArgs, workDir, idleTTL, tools.DefaultDenyPatterns(), opts...,
+		settings.Binary, settings.Args, settings.WorkDirOrDefault(),
+		settings.IdleTTLOrDefault(5*time.Minute),
+		tools.DefaultDenyPatterns(),
+		providers.WithACPModel(settings),
+		providers.WithACPPermMode(settings),
+		providers.WithACPMCPConfigData(settings),
+		providers.WithIncludeDirectories(settings),
 	))
-	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary, "args", finalArgs)
+	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary, "args", cfg.Args)
 }
 
-// buildACPMCPServerLookup returns a lookup function that lists every enabled
-// MCP server in the store, ignoring per-agent grants. The UI currently has no
-// surface for configuring grants, so treating every enabled server as globally
-// available keeps "register a server in the UI → it just shows up in ACP"
-// behavior consistent with user expectations. Returns nil when mcpStore is nil.
-func buildACPMCPServerLookup(mcpStore store.MCPServerStore) providers.MCPServerLookup {
-	if mcpStore == nil {
-		return nil
-	}
-	return func(ctx context.Context, _ string) []providers.MCPServerEntry {
-		all, err := mcpStore.ListServers(ctx)
-		if err != nil {
-			slog.Warn("acp: failed to list MCP servers", "error", err)
-			return nil
-		}
-		var entries []providers.MCPServerEntry
-		for _, srv := range all {
-			if !srv.Enabled {
-				continue
-			}
-			entries = append(entries, providers.MCPServerEntry{
-				Name:      srv.Name,
-				Transport: srv.Transport,
-				Command:   srv.Command,
-				URL:       srv.URL,
-				Args:      jsonToStringSlice(srv.Args),
-				Headers:   jsonToStringMap(srv.Headers),
-				Env:       jsonToStringMap(srv.Env),
-			})
-		}
-		return entries
-	}
-}
-
-// buildACPMcpServersFunc returns a callback that builds the MCP server list
-// for every ACP session/new and session/load request.
-//
-// The list always includes the GoClaw internal MCP bridge (skill_search,
-// web_search, memory_*, etc.). When a per-agent MCPServerLookup is provided,
-// UI-registered MCP servers accessible to the calling agent are appended.
-// Returns nil when the gateway address is empty (no bridge to advertise).
-func buildACPMcpServersFunc(gatewayAddr, gatewayToken string, lookup providers.MCPServerLookup) func(context.Context) []acp.McpServer {
-	if gatewayAddr == "" {
-		return nil
-	}
-	bridgeURL := fmt.Sprintf("http://%s/mcp/bridge", gatewayAddr)
-	return func(ctx context.Context) []acp.McpServer {
-		// Resolve session context; ACP session is created per goclaw session, so
-		// these values remain valid for all subsequent MCP tool calls routed
-		// through the headers Gemini CLI will replay on each request.
-		var agentID, tenantID string
-		if aid := store.AgentIDFromContext(ctx); aid != uuid.Nil {
-			agentID = aid.String()
-		}
-		userID := store.UserIDFromContext(ctx)
-		if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {
-			tenantID = tid.String()
-		}
-		workspace := tools.ToolWorkspaceFromCtx(ctx)
-
-		// Build headers in the same order and set as Claude CLI bridge, so
-		// bridgeContextMiddleware accepts the signature verbatim.
-		headers := []acp.McpServerKV{}
-		if gatewayToken != "" {
-			headers = append(headers, acp.McpServerKV{Name: "Authorization", Value: "Bearer " + gatewayToken})
-		}
-		if agentID != "" && !strings.ContainsAny(agentID, "\r\n\x00") {
-			headers = append(headers, acp.McpServerKV{Name: "X-Agent-ID", Value: agentID})
-		}
-		if userID != "" && !strings.ContainsAny(userID, "\r\n\x00") {
-			headers = append(headers, acp.McpServerKV{Name: "X-User-ID", Value: userID})
-		}
-		if workspace != "" && !strings.ContainsAny(workspace, "\r\n\x00") {
-			headers = append(headers, acp.McpServerKV{Name: "X-Workspace", Value: workspace})
-		}
-		if tenantID != "" && !strings.ContainsAny(tenantID, "\r\n\x00") {
-			headers = append(headers, acp.McpServerKV{Name: "X-Tenant-ID", Value: tenantID})
-		}
-		// HMAC protects all context fields against forgery. ACP sessions don't
-		// carry channel/chatID/peerKind context (those are per-prompt channel
-		// routing values), so pass them as empty strings — server verifies
-		// with the same empty values and accepts.
-		if gatewayToken != "" && (agentID != "" || userID != "") {
-			sig := providers.SignBridgeContext(gatewayToken, agentID, userID, "", "", "", workspace, tenantID)
-			headers = append(headers, acp.McpServerKV{Name: "X-Bridge-Sig", Value: sig})
-		}
-
-		bridgeEntry := acp.McpServerHTTP{
-			Type:    "http",
-			Name:    "goclaw-bridge",
-			URL:     bridgeURL,
-			Headers: headers,
-		}
-
-		servers := []acp.McpServer{bridgeEntry}
-		if lookup == nil {
-			return servers
-		}
-		if agentID == "" {
-			return servers
-		}
-		for _, entry := range lookup(ctx, agentID) {
-			servers = append(servers, mcpServerEntryToACP(entry))
-		}
-		return servers
-	}
-}
-
-// mcpServerEntryToACP converts a goclaw MCPServerEntry (UI/DB-registered) to
-// the ACP schema. Transport strings map as follows:
-//   - "stdio"            → McpServerStdio (command/args/env)
-//   - "sse"/"http"/other → McpServerHTTP (url + headers, treated as HTTP)
-//
-// Empty maps/slices are normalized to non-nil so the ACP schema's required
-// fields (Headers for HTTP, Args/Env for stdio) are always present.
-func mcpServerEntryToACP(e providers.MCPServerEntry) acp.McpServer {
-	if e.Transport == "stdio" {
-		env := make([]acp.McpServerKV, 0, len(e.Env))
-		for k, v := range e.Env {
-			env = append(env, acp.McpServerKV{Name: k, Value: v})
-		}
-		args := e.Args
-		if args == nil {
-			args = []string{}
-		}
-		return acp.McpServerStdio{
-			Type:    "stdio",
-			Name:    e.Name,
-			Command: e.Command,
-			Args:    args,
-			Env:     env,
-		}
-	}
-	headers := make([]acp.McpServerKV, 0, len(e.Headers))
-	for k, v := range e.Headers {
-		headers = append(headers, acp.McpServerKV{Name: k, Value: v})
-	}
-	return acp.McpServerHTTP{
-		Type:    "http",
-		Name:    e.Name,
-		URL:     e.URL,
-		Headers: headers,
-	}
-}
-
-// registerACPFromDB registers an ACP provider from a DB provider row.
-// lookup may be nil; when provided, UI-registered MCP servers accessible to the
-// calling agent are appended to the ACP session's mcpServers.
-// workspace is the gateway-level default workspace, used for
-// --include-directories on workspace-relative skill slots.
-func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData, gatewayAddr, gatewayToken string, lookup providers.MCPServerLookup, workspace string) {
+// registerACPFromDB registers an ACP provider from a DB row.
+// Called at startup (via registerProvidersFromDB) and on hot-reload.
+// DB JSONB unmarshals directly into providers.ACPSettings — the shared struct's
+// json tags match the historic schema (args, idle_ttl, perm_mode, work_dir,
+// include_directories). The MCP bridge config is read from the package-level
+// acpMCPData (set by callers via buildACPMCPData before invocation).
+func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData) {
 	binary := p.APIBase // repurpose api_base as binary path
 	if binary == "" {
 		slog.Warn("acp: no binary specified in DB provider", "name", p.Name)
@@ -613,112 +494,27 @@ func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData, ga
 		slog.Warn("acp: binary not found, skipping", "binary", binary, "error", err)
 		return
 	}
-	// Parse settings JSONB for extra config
-	var settings struct {
-		Args     []string `json:"args"`
-		IdleTTL  string   `json:"idle_ttl"`
-		PermMode string   `json:"perm_mode"`
-		WorkDir  string   `json:"work_dir"`
+	settings := &providers.ACPSettings{
+		Name:   p.Name,
+		Binary: binary,
+		Model:  p.Name, // historical: provider name doubles as default agent/model
 	}
 	if p.Settings != nil {
-		if err := json.Unmarshal(p.Settings, &settings); err != nil {
+		if err := json.Unmarshal(p.Settings, settings); err != nil {
 			slog.Warn("acp: invalid settings JSON, using defaults", "name", p.Name, "error", err)
 		}
 	}
-	idleTTL := 5 * time.Minute
-	if settings.IdleTTL != "" {
-		if d, err := time.ParseDuration(settings.IdleTTL); err == nil {
-			idleTTL = d
-		}
-	}
-	workDir := settings.WorkDir
-	if workDir == "" {
-		workDir = defaultACPWorkDir()
-	}
-	acpOpts := []providers.ACPOption{
-		providers.WithACPName(p.Name),
-		providers.WithACPModel(p.Name),
-	}
-	if settings.PermMode != "" {
-		acpOpts = append(acpOpts, providers.WithACPPermMode(settings.PermMode))
-	}
-	if fn := buildACPMcpServersFunc(gatewayAddr, gatewayToken, lookup); fn != nil {
-		acpOpts = append(acpOpts, providers.WithACPMcpServersFunc(fn))
-	}
-	finalArgs := enrichGeminiACPArgs(binary, settings.Args, workspace)
+	settings.MCPData = acpMCPData
 	registry.RegisterForTenant(p.TenantID, providers.NewACPProvider(
-		binary, finalArgs, workDir, idleTTL, tools.DefaultDenyPatterns(),
-		acpOpts...,
+		settings.Binary, settings.Args, settings.WorkDirOrDefault(),
+		settings.IdleTTLOrDefault(5*time.Minute),
+		tools.DefaultDenyPatterns(),
+		providers.WithACPName(settings),
+		providers.WithACPModel(settings),
+		providers.WithACPPermMode(settings),
+		providers.WithACPMCPConfigData(settings),
+		providers.WithIncludeDirectories(settings),
 	))
 	slog.Info("registered provider from DB", "name", p.Name, "type", "acp")
 }
 
-// defaultACPWorkDir returns the default workspace directory for ACP agents.
-func defaultACPWorkDir() string {
-	return filepath.Join(config.ResolvedDataDirFromEnv(), "acp-workspaces")
-}
-
-// enrichGeminiACPArgs adds --include-directories flags so the Gemini CLI
-// workspace sandbox can read goclaw-managed skill content alongside the agent's
-// own working directory.
-//
-// Without this, Gemini's built-in fs tools (glob, read_file) reject any path
-// outside the cwd, so prompts like "list /home/user/.goclaw/data/skills-store"
-// fail even though the goclaw MCP bridge could fulfill them.
-//
-// Applies only when the binary is "gemini" (via PATH or absolute path).
-// No-op for claude, codex, or any other ACP-compatible binary, since their
-// sandboxing semantics differ.
-//
-// Mirrors the five filesystem-backed skill source slots that
-// internal/skills/loader.go reads at runtime (builtinSkills is binary-embedded,
-// not a filesystem path, so it is omitted). Paths that do not exist on disk
-// are skipped to avoid Gemini CLI warnings about missing workspace entries.
-//
-// Sources mirrored:
-//   - workspaceSkills      : <workspace>/skills
-//   - projectAgentSkills   : <workspace>/.agents/skills
-//   - managedSkillsDir     : <dataDir>/skills-store
-//   - globalSkills         : <dataDir>/skills
-//   - personalAgentSkills  : ~/.agents/skills
-//
-// Note: bundled-skills (seeder source) is intentionally NOT included — the
-// seeder copies its content into skills-store, so exposing bundled-skills
-// would duplicate trees in the agent workspace.
-func enrichGeminiACPArgs(binary string, args []string, workspace string) []string {
-	base := filepath.Base(binary)
-	if base != "gemini" {
-		return args
-	}
-	dataDir := config.ResolvedDataDirFromEnv()
-
-	candidates := []string{
-		filepath.Join(dataDir, "skills-store"), // managedSkillsDir
-		filepath.Join(dataDir, "skills"),       // globalSkills
-	}
-	if workspace != "" {
-		ws := config.ExpandHome(workspace)
-		candidates = append(candidates,
-			filepath.Join(ws, "skills"),            // workspaceSkills
-			filepath.Join(ws, ".agents", "skills"), // projectAgentSkills
-		)
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		candidates = append(candidates,
-			filepath.Join(home, ".agents", "skills"), // personalAgentSkills
-		)
-	}
-
-	extras := make([]string, 0, len(candidates)*2)
-	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		info, err := os.Stat(p)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		extras = append(extras, "--include-directories", p)
-	}
-	return append(append([]string{}, args...), extras...)
-}

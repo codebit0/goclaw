@@ -38,7 +38,7 @@ type ProvidersHandler struct {
 	tracingStore    store.TracingStore           // optional: for provider-scoped pool activity
 	agents          store.AgentCRUDStore         // optional: for provider pool activity agent lookup
 	modelReg        providers.ModelRegistry      // optional: forward-compat model resolver for Anthropic
-	acpRegisterFn   func(*store.LLMProviderData) // optional: hot-reload ACP providers without restart
+	providerReloadFn func(*store.LLMProviderData) // optional: hot-reload process-based providers without restart
 }
 
 // NewProvidersHandler creates a handler for provider management endpoints.
@@ -85,11 +85,10 @@ func (h *ProvidersHandler) SetModelRegistry(r providers.ModelRegistry) {
 	h.modelReg = r
 }
 
-// SetACPRegisterFn sets a callback invoked when an ACP provider is created or updated.
-// The callback should re-register the provider in the in-memory registry so the change
-// takes effect on the next conversation turn without a gateway restart.
-func (h *ProvidersHandler) SetACPRegisterFn(fn func(*store.LLMProviderData)) {
-	h.acpRegisterFn = fn
+// SetProviderReloadFn sets a callback invoked when a process-based provider (ACP)
+// is created or updated, so the change takes effect without a gateway restart.
+func (h *ProvidersHandler) SetProviderReloadFn(fn func(*store.LLMProviderData)) {
+	h.providerReloadFn = fn
 }
 
 // resolveAPIBase returns the provider's api_base, falling back to config/env if empty.
@@ -168,10 +167,10 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 	if h.providerReg == nil || !p.Enabled {
 		return
 	}
-	// ACP providers use a process pool; delegate registration to the callback wired from cmd/.
+	// ACP providers use a process pool; delegate to the reload callback wired from cmd/.
 	if p.ProviderType == store.ProviderACP {
-		if h.acpRegisterFn != nil {
-			h.acpRegisterFn(p)
+		if h.providerReloadFn != nil {
+			h.providerReloadFn(p)
 		}
 		return
 	}
