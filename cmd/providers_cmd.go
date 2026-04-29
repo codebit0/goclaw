@@ -181,7 +181,7 @@ func runProvidersAdd() {
 	if providerID != "" {
 		verify, err := promptConfirm("Verify connection now?", true)
 		if err == nil && verify {
-			runProviderVerify(providerID, "")
+			runProviderVerify(providerID)
 		}
 	}
 }
@@ -266,41 +266,45 @@ func providersDeleteCmd() *cobra.Command {
 }
 
 func providersVerifyCmd() *cobra.Command {
-	var modelFlag string
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "verify <id>",
-		Short: "Verify provider connectivity (ping) or a specific model",
-		Long:  "Without --model: pings the provider (registered + reachable check).\nWith --model: sends a small chat request to validate the model alias.",
+		Short: "Verify provider connectivity and list models",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			requireRunningGatewayHTTP()
-			runProviderVerify(args[0], modelFlag)
+			runProviderVerify(args[0])
 		},
 	}
-	cmd.Flags().StringVar(&modelFlag, "model", "", "model alias to verify (omit for connectivity ping)")
-	return cmd
 }
 
-func runProviderVerify(providerID, model string) {
+func runProviderVerify(providerID string) {
 	fmt.Print("Verifying provider... ")
-	var body any
-	if model != "" {
-		body = map[string]string{"model": model}
-	}
-	resp, err := gatewayHTTPPost("/v1/providers/"+url.PathEscape(providerID)+"/verify", body)
+	resp, err := gatewayHTTPPost("/v1/providers/"+url.PathEscape(providerID)+"/verify", nil)
 	if err != nil {
 		fmt.Printf("FAILED\n  %v\n", err)
 		return
 	}
-	if valid, _ := resp["valid"].(bool); valid {
+
+	if ok, _ := resp["success"].(bool); ok {
 		fmt.Println("OK")
-		return
+		// Show available models
+		raw, _ := json.Marshal(resp["models"])
+		var models []httpProviderModel
+		if json.Unmarshal(raw, &models) == nil && len(models) > 0 {
+			fmt.Printf("  Available models: %d\n", len(models))
+			limit := 10
+			for i, m := range models {
+				if i >= limit {
+					fmt.Printf("  ... and %d more\n", len(models)-limit)
+					break
+				}
+				fmt.Printf("  - %s\n", m.ID)
+			}
+		}
+	} else {
+		msg, _ := resp["error"].(string)
+		fmt.Printf("FAILED\n  %s\n", msg)
 	}
-	msg, _ := resp["error"].(string)
-	if msg == "" {
-		msg = "verification failed"
-	}
-	fmt.Printf("FAILED\n  %s\n", msg)
 }
 
 // defaultBaseURL returns the default API base URL for a provider type.

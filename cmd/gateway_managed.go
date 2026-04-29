@@ -680,6 +680,8 @@ func wireExtras(
 		// Unregister old instance (closes ProcessPool) then re-register
 		providerReg.Unregister(p.Name)
 		if p.Enabled {
+			acpMCPData = buildACPMCPData(loopbackAddr(appCfg.Gateway.Host, appCfg.Gateway.Port),
+				appCfg.Gateway.Token, stores.MCP)
 			registerACPFromDB(providerReg, *p)
 		}
 	})

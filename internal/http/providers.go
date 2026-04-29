@@ -35,9 +35,10 @@ type ProvidersHandler struct {
 	cliMu           sync.Mutex                       // serializes Claude CLI provider create to prevent duplicates
 	msgBus          *bus.MessageBus
 	sysConfigStore  store.SystemConfigStore
-	tracingStore    store.TracingStore      // optional: for provider-scoped pool activity
-	agents          store.AgentCRUDStore    // optional: for provider pool activity agent lookup
-	modelReg        providers.ModelRegistry // optional: forward-compat model resolver for Anthropic
+	tracingStore    store.TracingStore           // optional: for provider-scoped pool activity
+	agents          store.AgentCRUDStore         // optional: for provider pool activity agent lookup
+	modelReg        providers.ModelRegistry      // optional: forward-compat model resolver for Anthropic
+	providerReloadFn func(*store.LLMProviderData) // optional: hot-reload process-based providers without restart
 }
 
 // NewProvidersHandler creates a handler for provider management endpoints.
@@ -82,6 +83,12 @@ func (h *ProvidersHandler) SetAgentStore(as store.AgentCRUDStore) {
 // for model alias resolution and token counting. Must be called before serving requests.
 func (h *ProvidersHandler) SetModelRegistry(r providers.ModelRegistry) {
 	h.modelReg = r
+}
+
+// SetProviderReloadFn sets a callback invoked when a process-based provider (ACP)
+// is created or updated, so the change takes effect without a gateway restart.
+func (h *ProvidersHandler) SetProviderReloadFn(fn func(*store.LLMProviderData)) {
+	h.providerReloadFn = fn
 }
 
 // resolveAPIBase returns the provider's api_base, falling back to config/env if empty.
@@ -160,9 +167,11 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 	if h.providerReg == nil || !p.Enabled {
 		return
 	}
-	// ACP agents don't need an API key — skip in-memory registration
-	// (ACP providers are registered via gateway_providers.go on startup or restart)
+	// ACP providers use a process pool; delegate to the reload callback wired from cmd/.
 	if p.ProviderType == store.ProviderACP {
+		if h.providerReloadFn != nil {
+			h.providerReloadFn(p)
+		}
 		return
 	}
 	// Claude CLI doesn't need an API key — register immediately

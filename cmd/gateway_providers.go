@@ -19,6 +19,36 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
+// acpMCPData is the package-level MCP bridge config consumed by
+// registerACPFromConfig and registerACPFromDB. Callers populate it via
+// buildACPMCPData before invoking either register* — keeping these functions
+// at their original 2-arg signatures (registry + cfg/p) and making
+// hot-reload paths idempotent (they refresh this var before re-registering).
+//
+// Single-process gateway scope means a package-level var is acceptable here:
+// gateway addr/token/MCPStore are fixed for the lifetime of the binary, and
+// the four set-sites (startup config, startup DB iteration, two hot-reload
+// closures) all derive identical values.
+var acpMCPData *providers.MCPConfigData
+
+// buildACPMCPData assembles the MCP bridge config consumed by ACP providers.
+// Returns nil when no gateway addr is available, which makes downstream
+// settings.MCPData nil and the ACP provider skip MCP server injection.
+// mcpStore is optional — when non-nil, the AgentMCPLookup closure is attached
+// so per-agent MCP servers are surfaced to the ACP subprocess at session/new
+// time (DB-registered providers only; config-based providers run without
+// per-agent MCP).
+func buildACPMCPData(gatewayAddr, gatewayToken string, mcpStore store.MCPServerStore) *providers.MCPConfigData {
+	if gatewayAddr == "" {
+		return nil
+	}
+	data := providers.BuildCLIMCPConfigData(nil, gatewayAddr, gatewayToken)
+	if mcpStore != nil {
+		data.AgentMCPLookup = buildMCPServerLookup(mcpStore)
+	}
+	return data
+}
+
 // loopbackAddr normalizes a gateway address for local connections.
 // CLI processes on the same machine can't connect to 0.0.0.0 on some OSes.
 func loopbackAddr(host string, port int) string {
@@ -29,6 +59,7 @@ func loopbackAddr(host string, port int) string {
 }
 
 func registerProviders(registry *providers.Registry, cfg *config.Config, modelReg providers.ModelRegistry) {
+	gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
 	if cfg.Providers.Anthropic.APIKey != "" {
 		registry.Register(providers.NewAnthropicProvider(cfg.Providers.Anthropic.APIKey,
 			providers.WithAnthropicBaseURL(cfg.Providers.Anthropic.APIBase),
@@ -188,7 +219,6 @@ func registerProviders(registry *providers.Registry, cfg *config.Config, modelRe
 			opts = append(opts, providers.WithClaudeCLIPermMode(cfg.Providers.ClaudeCLI.PermMode))
 		}
 		// Build per-session MCP config: external MCP servers + GoClaw bridge
-		gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
 		mcpData := providers.BuildCLIMCPConfigData(cfg.Tools.McpServers, gatewayAddr, cfg.Gateway.Token)
 		opts = append(opts, providers.WithClaudeCLIMCPConfigData(mcpData))
 		// Enable GoClaw security hooks (shell deny patterns, path restrictions)
@@ -200,6 +230,7 @@ func registerProviders(registry *providers.Registry, cfg *config.Config, modelRe
 
 	// ACP provider (config-based) — orchestrates any ACP-compatible agent binary
 	if cfg.Providers.ACP.Binary != "" {
+		acpMCPData = buildACPMCPData(gatewayAddr, cfg.Gateway.Token, nil)
 		registerACPFromConfig(registry, cfg.Providers.ACP)
 	}
 }
@@ -276,6 +307,7 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 		slog.Warn("failed to load providers from DB", "error", err)
 		return
 	}
+	acpMCPData = buildACPMCPData(gatewayAddr, gatewayToken, mcpStore)
 	for _, p := range dbProviders {
 		// Claude CLI doesn't need API key
 		if !p.Enabled {
@@ -411,35 +443,43 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 }
 
 // registerACPFromConfig registers an ACP provider from config file settings.
+// All ACP options consume one shared *providers.ACPSettings populated from cfg;
+// per-binary defaults (e.g. gemini's --include-directories) are applied inside
+// the relevant With* option in the providers package. The MCP bridge config
+// is read from the package-level acpMCPData (set by callers via
+// buildACPMCPData before invocation).
 func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig) {
 	if _, err := exec.LookPath(cfg.Binary); err != nil {
 		slog.Warn("acp: binary not found, skipping", "binary", cfg.Binary, "error", err)
 		return
 	}
-	idleTTL := 5 * time.Minute
-	if cfg.IdleTTL != "" {
-		if d, err := time.ParseDuration(cfg.IdleTTL); err == nil {
-			idleTTL = d
-		}
-	}
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		workDir = defaultACPWorkDir()
-	}
-	var opts []providers.ACPOption
-	if cfg.Model != "" {
-		opts = append(opts, providers.WithACPModel(cfg.Model))
-	}
-	if cfg.PermMode != "" {
-		opts = append(opts, providers.WithACPPermMode(cfg.PermMode))
+	settings := &providers.ACPSettings{
+		Binary:   cfg.Binary,
+		Args:     cfg.Args,
+		Model:    cfg.Model,
+		PermMode: cfg.PermMode,
+		IdleTTL:  cfg.IdleTTL,
+		WorkDir:  cfg.WorkDir,
+		MCPData:  acpMCPData,
 	}
 	registry.Register(providers.NewACPProvider(
-		cfg.Binary, cfg.Args, workDir, idleTTL, tools.DefaultDenyPatterns(), opts...,
+		settings.Binary, settings.Args, settings.WorkDirOrDefault(),
+		settings.IdleTTLOrDefault(5*time.Minute),
+		tools.DefaultDenyPatterns(),
+		providers.WithACPModel(settings),
+		providers.WithACPPermMode(settings),
+		providers.WithACPMCPConfigData(settings),
+		providers.WithIncludeDirectories(settings),
 	))
-	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary)
+	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary, "args", cfg.Args)
 }
 
-// registerACPFromDB registers an ACP provider from a DB provider row.
+// registerACPFromDB registers an ACP provider from a DB row.
+// Called at startup (via registerProvidersFromDB) and on hot-reload.
+// DB JSONB unmarshals directly into providers.ACPSettings — the shared struct's
+// json tags match the historic schema (args, idle_ttl, perm_mode, work_dir,
+// include_directories). The MCP bridge config is read from the package-level
+// acpMCPData (set by callers via buildACPMCPData before invocation).
 func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData) {
 	binary := p.APIBase // repurpose api_base as binary path
 	if binary == "" {
@@ -454,37 +494,27 @@ func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData) {
 		slog.Warn("acp: binary not found, skipping", "binary", binary, "error", err)
 		return
 	}
-	// Parse settings JSONB for extra config
-	var settings struct {
-		Args     []string `json:"args"`
-		IdleTTL  string   `json:"idle_ttl"`
-		PermMode string   `json:"perm_mode"`
-		WorkDir  string   `json:"work_dir"`
+	settings := &providers.ACPSettings{
+		Name:   p.Name,
+		Binary: binary,
+		Model:  p.Name, // historical: provider name doubles as default agent/model
 	}
 	if p.Settings != nil {
-		if err := json.Unmarshal(p.Settings, &settings); err != nil {
+		if err := json.Unmarshal(p.Settings, settings); err != nil {
 			slog.Warn("acp: invalid settings JSON, using defaults", "name", p.Name, "error", err)
 		}
 	}
-	idleTTL := 5 * time.Minute
-	if settings.IdleTTL != "" {
-		if d, err := time.ParseDuration(settings.IdleTTL); err == nil {
-			idleTTL = d
-		}
-	}
-	workDir := settings.WorkDir
-	if workDir == "" {
-		workDir = defaultACPWorkDir()
-	}
+	settings.MCPData = acpMCPData
 	registry.RegisterForTenant(p.TenantID, providers.NewACPProvider(
-		binary, settings.Args, workDir, idleTTL, tools.DefaultDenyPatterns(),
-		providers.WithACPName(p.Name),
-		providers.WithACPModel(p.Name),
+		settings.Binary, settings.Args, settings.WorkDirOrDefault(),
+		settings.IdleTTLOrDefault(5*time.Minute),
+		tools.DefaultDenyPatterns(),
+		providers.WithACPName(settings),
+		providers.WithACPModel(settings),
+		providers.WithACPPermMode(settings),
+		providers.WithACPMCPConfigData(settings),
+		providers.WithIncludeDirectories(settings),
 	))
 	slog.Info("registered provider from DB", "name", p.Name, "type", "acp")
 }
 
-// defaultACPWorkDir returns the default workspace directory for ACP agents.
-func defaultACPWorkDir() string {
-	return filepath.Join(config.ResolvedDataDirFromEnv(), "acp-workspaces")
-}
