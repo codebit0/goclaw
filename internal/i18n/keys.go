@@ -228,4 +228,11 @@ const (
 	MsgHookBudgetExceeded          = "hook.budget_exceeded"           // "tenant hook token budget exceeded"
 	MsgHookPerTurnCapReached       = "hook.per_turn_cap_reached"      // "hook invocation per-turn cap reached"
 	MsgHookBuiltinReadOnly         = "hook.builtin_readonly"          // "builtin hooks are read-only except for the enabled toggle"
+
+	// --- System prompt meta (locale-aware framing for ACP/MCP-bridged agents) ---
+	MsgSysChannelGreetingDirect      = "sysprompt.channel_greeting_direct"       // "You are a personal assistant running in %s (a direct chat)."
+	MsgSysChannelGreetingGroup       = "sysprompt.channel_greeting_group"        // "You are a personal assistant running in %s (a group chat)."
+	MsgSysChannelGreetingGroupTitled = "sysprompt.channel_greeting_group_titled" // "You are a personal assistant running in %s (group chat \"%s\")."
+	MsgSysCronJobMetaDeliver         = "sysprompt.cron_meta_deliver"             // "[Cron Job]\nThis is scheduled job \"%s\" (ID: %s).\nRequester: user %s on channel \"%s\" (chat %s).\nYour response will be automatically delivered to that chat — just produce the content directly."
+	MsgSysCronJobMetaNoDeliver       = "sysprompt.cron_meta_no_deliver"          // "[Cron Job]\nThis is scheduled job \"%s\" (ID: %s), created by user %s.\nDelivery is not configured — respond normally."
 )

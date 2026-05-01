@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,10 +13,62 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
+	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
 	"github.com/nextlevelbuilder/goclaw/internal/sessions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
+
+// resolveCronLocale walks the user → tenant cascade defined for cron-triggered
+// agent runs:
+//
+//	1) tenant_users.metadata->>'locale'  (job.UserID × job.TenantID)
+//	2) tenants.settings->>'locale'       (tenant default)
+//	3) "" (caller is responsible for falling back to i18n.DefaultLocale)
+//
+// The cascade reuses jsonb metadata fields that already exist on tenant_users
+// and tenants — no schema changes, no env vars.
+func resolveCronLocale(ctx context.Context, tenantStore store.TenantStore, tenantID uuid.UUID, userID string) string {
+	if tenantStore == nil || tenantID == uuid.Nil {
+		return ""
+	}
+	// 1) tenant_users.metadata
+	if userID != "" {
+		if tus, err := tenantStore.ListUserTenants(ctx, userID); err == nil {
+			for _, tu := range tus {
+				if tu.TenantID != tenantID {
+					continue
+				}
+				if loc := jsonbLocale(tu.Metadata); loc != "" {
+					return loc
+				}
+				break
+			}
+		}
+	}
+	// 2) tenants.settings
+	if t, err := tenantStore.GetTenant(ctx, tenantID); err == nil && t != nil {
+		if loc := jsonbLocale(t.Settings); loc != "" {
+			return loc
+		}
+	}
+	return ""
+}
+
+// jsonbLocale extracts a "locale" string from a jsonb blob. Returns "" on
+// missing key, parse error, or non-string value.
+func jsonbLocale(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var bag struct {
+		Locale string `json:"locale"`
+	}
+	if json.Unmarshal(raw, &bag) != nil {
+		return ""
+	}
+	return bag.Locale
+}
 
 // makeCronJobHandler creates a cron job handler that routes through the scheduler's cron lane.
 // This ensures per-session concurrency control (same job can't run concurrently)
@@ -24,7 +77,7 @@ import (
 // Safe because cron jobs only fire after Start(), well after this is set.
 var cronHeartbeatWakeFn func(agentID string)
 
-func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg *config.Config, channelMgr *channels.Manager, sessionMgr store.SessionStore, agentStore store.AgentStore) func(job *store.CronJob) (*store.CronJobResult, error) {
+func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg *config.Config, channelMgr *channels.Manager, sessionMgr store.SessionStore, agentStore store.AgentStore, tenantStore store.TenantStore) func(job *store.CronJob) (*store.CronJobResult, error) {
 	return func(job *store.CronJob) (*store.CronJobResult, error) {
 		agentID := job.AgentID
 		if agentID == "" && agentStore != nil {
@@ -61,29 +114,33 @@ func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg 
 		// Resolve channel type for system prompt context.
 		channelType := resolveChannelType(channelMgr, channel)
 
-		// Build cron context so the agent knows delivery target and requester.
-		var extraPrompt string
-		if job.Deliver && job.DeliverChannel != "" && job.DeliverTo != "" {
-			extraPrompt = fmt.Sprintf(
-				"[Cron Job]\nThis is scheduled job \"%s\" (ID: %s).\n"+
-					"Requester: user %s on channel \"%s\" (chat %s).\n"+
-					"Your response will be automatically delivered to that chat — just produce the content directly.",
-				job.Name, job.ID, job.UserID, job.DeliverChannel, job.DeliverTo,
-			)
-		} else {
-			extraPrompt = fmt.Sprintf(
-				"[Cron Job]\nThis is scheduled job \"%s\" (ID: %s), created by user %s.\n"+
-					"Delivery is not configured — respond normally.",
-				job.Name, job.ID, job.UserID,
-			)
-		}
-
 		// Build context with tenant scope and timeout so agent loop events are
 		// scoped correctly and a hung agent can't block the cron scheduler forever.
 		jobTimeout := cfg.Cron.JobTimeoutDuration()
 		cronCtx, cancelCron := context.WithTimeout(context.Background(), jobTimeout)
 		defer cancelCron()
 		cronCtx = store.WithTenantID(cronCtx, job.TenantID)
+
+		// Cron has no inbound channel locale (unlike WS connect or HTTP
+		// Accept-Language). Resolve via tenant_users → tenants cascade so the
+		// system prompt and meta lines render in the right language. Empty
+		// locale falls through to i18n.DefaultLocale (English) inside i18n.T.
+		cronLocale := resolveCronLocale(cronCtx, tenantStore, job.TenantID, job.UserID)
+		if cronLocale != "" {
+			cronCtx = store.WithLocale(cronCtx, cronLocale)
+		}
+
+		// Build cron context so the agent knows delivery target and requester.
+		var extraPrompt string
+		if job.Deliver && job.DeliverChannel != "" && job.DeliverTo != "" {
+			extraPrompt = i18n.T(cronLocale, i18n.MsgSysCronJobMetaDeliver,
+				job.Name, job.ID, job.UserID, job.DeliverChannel, job.DeliverTo,
+			)
+		} else {
+			extraPrompt = i18n.T(cronLocale, i18n.MsgSysCronJobMetaNoDeliver,
+				job.Name, job.ID, job.UserID,
+			)
+		}
 
 		// Reset session before each cron run to prevent tool errors from previous
 		// runs from polluting the context and blocking future executions (#294).

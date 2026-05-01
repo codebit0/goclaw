@@ -226,5 +226,12 @@ func init() {
 
 		// Message tool cross-target forward notice
 		MessageCrossTargetForwarded: "📤 Forwarded to %s as requested: %q",
+
+		// System prompt meta (locale-aware framing for ACP/MCP-bridged agents)
+		MsgSysChannelGreetingDirect:      "You are a personal assistant running in %s (a direct chat).",
+		MsgSysChannelGreetingGroup:       "You are a personal assistant running in %s (a group chat).",
+		MsgSysChannelGreetingGroupTitled: "You are a personal assistant running in %s (group chat \"%s\").",
+		MsgSysCronJobMetaDeliver:         "[Cron Job]\nThis is scheduled job \"%s\" (ID: %s).\nRequester: user %s on channel \"%s\" (chat %s).\nYour response will be automatically delivered to that chat — just produce the content directly.",
+		MsgSysCronJobMetaNoDeliver:       "[Cron Job]\nThis is scheduled job \"%s\" (ID: %s), created by user %s.\nDelivery is not configured — respond normally.",
 	})
 }

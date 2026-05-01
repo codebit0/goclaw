@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
+	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
@@ -115,6 +116,7 @@ type SystemPromptConfig struct {
 	ContextFiles  []bootstrap.ContextFile // bootstrap files for # Project Context
 	ExtraPrompt   string                  // extra system prompt (subagent context, etc.)
 	AgentType     string                  // "open" or "predefined" — affects context file framing
+	Locale        string                  // i18n locale (en/ko/zh/vi) — drives meta line translation; empty = DefaultLocale
 
 	HasSkillSearch      bool              // skill_search tool registered? (for search-mode prompt)
 	HasSkillManage      bool              // skill_manage tool registered + skill_evolve enabled for this agent
@@ -238,20 +240,24 @@ func BuildSystemPrompt(cfg SystemPromptConfig) string {
 		channelLabel = cfg.Channel
 	}
 	if channelLabel != "" {
-		chatType := "a direct chat"
-		if cfg.PeerKind == "group" {
-			chatType = "a group chat"
-			if cfg.ChatTitle != "" {
-				// Sanitize: strip quotes/newlines, truncate to prevent prompt injection
-				// (group admins control the title).
-				title := strings.NewReplacer("\"", "", "\n", " ", "\r", "").Replace(cfg.ChatTitle)
-				if len([]rune(title)) > 100 {
-					title = string([]rune(title)[:100])
-				}
-				chatType = fmt.Sprintf("group chat \"%s\"", title)
+		// Locale-aware greeting. Empty Locale falls back to i18n.DefaultLocale (English).
+		locale := cfg.Locale
+		var greeting string
+		switch {
+		case cfg.PeerKind == "group" && cfg.ChatTitle != "":
+			// Sanitize: strip quotes/newlines, truncate to prevent prompt injection
+			// (group admins control the title).
+			title := strings.NewReplacer("\"", "", "\n", " ", "\r", "").Replace(cfg.ChatTitle)
+			if len([]rune(title)) > 100 {
+				title = string([]rune(title)[:100])
 			}
+			greeting = i18n.T(locale, i18n.MsgSysChannelGreetingGroupTitled, channelLabel, title)
+		case cfg.PeerKind == "group":
+			greeting = i18n.T(locale, i18n.MsgSysChannelGreetingGroup, channelLabel)
+		default:
+			greeting = i18n.T(locale, i18n.MsgSysChannelGreetingDirect, channelLabel)
 		}
-		lines = append(lines, fmt.Sprintf("You are a personal assistant running in %s (%s).", channelLabel, chatType))
+		lines = append(lines, greeting)
 		lines = append(lines, "")
 
 		// Inject explicit reply-target block so the LLM has a copy-paste-ready

@@ -227,6 +227,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		ContextFiles:           contextFiles,
 		AgentType:              l.agentType,
 		ExtraPrompt:            extraSystemPrompt,
+		Locale:                 store.LocaleFromContext(ctx),
 		SandboxEnabled:         l.sandboxEnabled,
 		SandboxContainerDir:    l.sandboxContainerDir,
 		SandboxWorkspaceAccess: l.sandboxWorkspaceAccess,
