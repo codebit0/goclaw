@@ -25,20 +25,41 @@ type acpSessionEntry struct {
 // ACPProvider implements Provider by orchestrating ACP-compatible agent subprocesses.
 // One shared Gemini process is used; each goclaw conversation gets its own ACP session.
 type ACPProvider struct {
-	name         string
-	pool         *acp.ProcessPool
-	bridge       *acp.ToolBridge
-	defaultModel string
-	permMode     string
-	poolKey      string // key for the shared process in the pool (binary + args)
-	mcpServersFn func(context.Context) []acp.McpServer // resolved per session
-	includeDirs  []string                              // candidate dirs appended as --include-directories for gemini
+	name            string
+	binary          string // base binary name (claude / gemini / codex / ...) for vendor-specific behavior
+	pool            *acp.ProcessPool
+	bridge          *acp.ToolBridge
+	defaultModel    string
+	permMode        string
+	poolKey         string // key for the shared process in the pool (binary + args)
+	mcpServersFn    func(context.Context) []acp.McpServer // resolved per session
+	includeDirs     []string                              // candidate dirs appended as --include-directories for gemini
+	contextFileName string                                // e.g. "GEMINI.md", "CLAUDE.md", "AGENTS.md"; empty = no out-of-band system prompt
 
 	acpSessions sync.Map // goclawSessionKey → *acpSessionEntry
 	sessionMu   sync.Map // goclawSessionKey → *sync.Mutex (prevents concurrent session creation)
 
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+// contextFileNameForBinary returns the per-binary out-of-band system-prompt
+// filename that the agent CLI auto-loads from its session cwd. Returns "" for
+// unknown binaries — callers should fall back to in-prompt system instructions.
+//
+//   - claude → CLAUDE.md (Claude CLI native)
+//   - gemini → GEMINI.md (Gemini CLI native)
+//   - codex  → AGENTS.md (Codex agent file convention)
+func contextFileNameForBinary(binary string) string {
+	switch filepath.Base(binary) {
+	case "claude":
+		return "CLAUDE.md"
+	case "gemini":
+		return "GEMINI.md"
+	case "codex":
+		return "AGENTS.md"
+	}
+	return ""
 }
 
 // ACPOption configures an ACPProvider.
@@ -95,9 +116,11 @@ func WithIncludeDirectories(dirs []string) ACPOption {
 // NewACPProvider creates a provider that orchestrates ACP agents as subprocesses.
 func NewACPProvider(binary string, args []string, workDir string, idleTTL time.Duration, denyPatterns []*regexp.Regexp, opts ...ACPOption) *ACPProvider {
 	p := &ACPProvider{
-		name:         "acp",
-		defaultModel: "claude",
-		done:         make(chan struct{}),
+		name:            "acp",
+		binary:          binary,
+		defaultModel:    "claude",
+		contextFileName: contextFileNameForBinary(binary),
+		done:            make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -202,21 +225,28 @@ func (p *ACPProvider) ensureSessionDir(proc *acp.ACPProcess, goclawKey string) s
 	return dir
 }
 
-// writeGeminiMD writes the system prompt to GEMINI.md in the session workspace.
-// Gemini CLI reads this file automatically from the session cwd (mirrors writeClaudeMD).
-// Skips write if content is unchanged. Returns true if the file was rewritten,
-// signalling the caller to invalidate the live ACP session so the next request
-// starts a fresh session with the updated instructions.
-func (p *ACPProvider) writeGeminiMD(sessionDir, systemPrompt string) bool {
-	if sessionDir == "" || systemPrompt == "" {
+// writeContextFile writes the system prompt to the per-binary auto-loaded
+// context file in the session workspace (CLAUDE.md / GEMINI.md / AGENTS.md
+// depending on the binary). The agent CLI reads this file automatically from
+// the session cwd, so we don't have to repeat the system prompt on every turn.
+//
+// Skips entirely when the binary has no known context-file convention
+// (p.contextFileName == ""): caller will then fall back to in-prompt system
+// instructions via extractACPContent.
+//
+// Skips disk write when content is unchanged. Returns true only when the file
+// was rewritten — that signals the caller to invalidate the live ACP session
+// so the next request creates a fresh session that loads the updated file.
+func (p *ACPProvider) writeContextFile(sessionDir, systemPrompt string) bool {
+	if p.contextFileName == "" || sessionDir == "" || systemPrompt == "" {
 		return false
 	}
-	path := filepath.Join(sessionDir, "GEMINI.md")
+	path := filepath.Join(sessionDir, p.contextFileName)
 	if existing, err := os.ReadFile(path); err == nil && string(existing) == systemPrompt {
 		return false
 	}
 	if err := os.WriteFile(path, []byte(systemPrompt), 0600); err != nil {
-		slog.Warn("acp: failed to write GEMINI.md", "path", path, "error", err)
+		slog.Warn("acp: failed to write context file", "path", path, "error", err)
 		return false
 	}
 	return true
@@ -302,9 +332,10 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 
 	sessionDir := p.ensureSessionDir(proc, sessionKey)
 	systemPrompt, _, _ := extractFromMessages(req.Messages)
-	if p.writeGeminiMD(sessionDir, systemPrompt) {
+	hasContextFile := p.contextFileName != ""
+	if p.writeContextFile(sessionDir, systemPrompt) {
 		// System prompt changed — invalidate live session so next resolveSession
-		// creates a fresh one that loads the updated GEMINI.md.
+		// creates a fresh one that loads the updated context file.
 		p.acpSessions.Delete(sessionKey)
 	}
 
@@ -316,7 +347,7 @@ func (p *ACPProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse,
 		defer p.purgeSession(sessionKey)
 	}
 
-	content := extractACPContent(req, isNew)
+	content := extractACPContent(req, isNew, hasContextFile)
 	if len(content) == 0 {
 		return nil, fmt.Errorf("acp: no user message in request")
 	}
@@ -375,7 +406,8 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 
 	sessionDir := p.ensureSessionDir(proc, sessionKey)
 	systemPrompt, _, _ := extractFromMessages(req.Messages)
-	if p.writeGeminiMD(sessionDir, systemPrompt) {
+	hasContextFile := p.contextFileName != ""
+	if p.writeContextFile(sessionDir, systemPrompt) {
 		p.acpSessions.Delete(sessionKey)
 	}
 
@@ -387,7 +419,7 @@ func (p *ACPProvider) ChatStream(ctx context.Context, req ChatRequest, onChunk f
 		defer p.purgeSession(sessionKey)
 	}
 
-	content := extractACPContent(req, isNew)
+	content := extractACPContent(req, isNew, hasContextFile)
 	if len(content) == 0 {
 		return nil, fmt.Errorf("acp: no user message in request")
 	}
@@ -481,20 +513,45 @@ func (p *ACPProvider) Close() error {
 
 // extractACPContent builds ACP ContentBlocks from a ChatRequest.
 //
-// isNew=false (normal turn): GEMINI.md in the session workspace already provides
-// the system prompt, so only the current user message is sent. This avoids
-// repeating the (often large) system prompt on every turn.
+// hasContextFile gates the optimised paths: it must be true only when
+// writeContextFile actually produced a per-session CLAUDE.md / GEMINI.md /
+// AGENTS.md that the agent CLI auto-loads as system prompt.
 //
-// isNew=true (fresh or reset session): the session has no prior context.
-// All non-system messages from req.Messages are serialised as a conversation
-// transcript so that compacted summaries and recent history are preserved.
-// The system prompt is omitted here because writeGeminiMD wrote it to GEMINI.md
-// before the session was created.
-func extractACPContent(req ChatRequest, isNew bool) []acp.ContentBlock {
+//   - hasContextFile=true,  isNew=false: only the current user message
+//     (system prompt comes from the context file; agent retains history).
+//   - hasContextFile=true,  isNew=true:  conversation transcript without
+//     system role (context file already holds the system prompt; transcript
+//     restores compacted summaries + recent turns after a fresh / reset
+//     session).
+//   - hasContextFile=false (unknown binary, no out-of-band context): include
+//     the system prompt as a [System] block in front of the current user
+//     message every turn. Conversation history is left to the agent's own
+//     session state — this preserves pre-feature behaviour for binaries we
+//     don't have a CLAUDE.md/GEMINI.md/AGENTS.md mapping for.
+func extractACPContent(req ChatRequest, isNew, hasContextFile bool) []acp.ContentBlock {
 	msgs := req.Messages
 
+	if !hasContextFile {
+		// Unknown binary: prepend system prompt to the current user message
+		// every turn so the agent always sees its instructions, regardless of
+		// what its own session-state machinery does or doesn't do.
+		systemPrompt, userMsg, images := extractFromMessages(msgs)
+		if userMsg == "" {
+			return nil
+		}
+		text := userMsg
+		if systemPrompt != "" {
+			text = "[System]\n" + systemPrompt + "\n\n[User]\n" + userMsg
+		}
+		blocks := []acp.ContentBlock{{Type: "text", Text: text}}
+		for _, img := range images {
+			blocks = append(blocks, acp.ContentBlock{Type: "image", Data: img.Data, MimeType: img.MimeType})
+		}
+		return blocks
+	}
+
 	if !isNew {
-		// Normal turn: send only the current user message.
+		// Normal turn with context file: send only the current user message.
 		_, userMsg, images := extractFromMessages(msgs)
 		if userMsg == "" {
 			return nil
@@ -507,7 +564,7 @@ func extractACPContent(req ChatRequest, isNew bool) []acp.ContentBlock {
 	}
 
 	// New session: serialise full conversation context (summary + history + current).
-	// System prompt is excluded — GEMINI.md handles it.
+	// System prompt is excluded — context file handles it.
 	var sb strings.Builder
 	var images []ImageContent
 	for i, m := range msgs {
