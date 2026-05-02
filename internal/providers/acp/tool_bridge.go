@@ -56,10 +56,15 @@ func NewToolBridge(workspace string, opts ...ToolBridgeOption) *ToolBridge {
 
 // Handle dispatches agent→client requests by method name.
 // Implements the RequestHandler signature for Conn.
+//
+// Method names: ACP spec uses snake_case (fs/read_text_file,
+// session/request_permission, terminal/wait_for_exit). Earlier Claude CLI
+// builds emitted camelCase variants, so each case accepts both forms.
+// Gemini CLI 0.38.x+ sends spec-compliant snake_case exclusively.
 func (tb *ToolBridge) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	session := goclawSessionFromCtx(ctx)
 	switch method {
-	case "fs/readTextFile":
+	case "fs/read_text_file", "fs/readTextFile":
 		if tb.permMode == "deny-all" {
 			slog.Warn("security.tool_denied", "session", session, "tool", method, "reason", "deny-all")
 			return nil, fmt.Errorf("read denied by permission mode: %s", tb.permMode)
@@ -73,7 +78,7 @@ func (tb *ToolBridge) Handle(ctx context.Context, method string, params json.Raw
 			slog.Info("security.tool_granted", "session", session, "tool", method, "path", req.Path)
 		}
 		return result, err
-	case "fs/writeTextFile":
+	case "fs/write_text_file", "fs/writeTextFile":
 		if tb.permMode == "deny-all" || tb.permMode == "approve-reads" {
 			slog.Warn("security.tool_denied", "session", session, "tool", method, "reason", tb.permMode)
 			return nil, fmt.Errorf("write denied by permission mode: %s", tb.permMode)
@@ -113,7 +118,7 @@ func (tb *ToolBridge) Handle(ctx context.Context, method string, params json.Raw
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 		return tb.releaseTerminal(req)
-	case "terminal/waitForExit":
+	case "terminal/wait_for_exit", "terminal/waitForExit":
 		var req WaitForTerminalExitRequest
 		if err := json.Unmarshal(params, &req); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -174,51 +179,56 @@ func (tb *ToolBridge) writeFile(req WriteTextFileRequest) (*WriteTextFileRespons
 	return &WriteTextFileResponse{}, nil
 }
 
-// handleSessionPermission handles Gemini CLI's "session/request_permission" ACP method.
-// Gemini CLI expects a nested outcome object that differs from the generic "permission/request" format.
-// Responding with "proceed_always_server" adds the entire goclaw-bridge server to Gemini's
-// allowlist so all subsequent tool calls in the session skip the confirmation step.
+// handleSessionPermission handles the ACP-spec session/request_permission RPC.
+// Selection is by PermissionOption.Kind (allow_once / allow_always / reject_once
+// / reject_always) rather than by OptionID strings, since the spec leaves
+// OptionID as an agent-defined identifier with no guaranteed values. Earlier
+// Gemini CLI builds (≤0.36.x) emitted hardcoded OptionIDs like "proceed_once",
+// but 0.38.x+ uses Kind-tagged options exclusively per spec.
 func (tb *ToolBridge) handleSessionPermission(ctx context.Context, req SessionRequestPermissionRequest) (*SessionRequestPermissionResponse, error) {
 	session := goclawSessionFromCtx(ctx)
 
-	available := make(map[string]bool, len(req.Options))
-	for _, opt := range req.Options {
-		available[opt.OptionID] = true
+	pickByKind := func(kinds ...string) string {
+		for _, want := range kinds {
+			for _, opt := range req.Options {
+				if opt.Kind == want {
+					return opt.OptionID
+				}
+			}
+		}
+		return ""
 	}
+	cancelled := &SessionRequestPermissionResponse{Outcome: SessionPermOutcome{Outcome: "cancelled"}}
 
 	switch tb.permMode {
 	case "deny-all":
 		slog.Warn("security.tool_denied", "session", session, "tool", req.ToolCall.Title, "reason", "deny-all")
-		return &SessionRequestPermissionResponse{
-			Outcome: SessionPermOutcome{Outcome: "cancelled"},
-		}, nil
+		return cancelled, nil
 	case "approve-reads":
 		lower := strings.ToLower(req.ToolCall.Title)
 		if strings.Contains(lower, "read") || strings.Contains(lower, "glob") ||
 			strings.Contains(lower, "grep") || strings.Contains(lower, "search") ||
 			strings.Contains(lower, "list") || strings.Contains(lower, "view") {
-			slog.Info("security.tool_granted", "session", session, "tool", req.ToolCall.Title, "mode", "approve-reads")
-			return &SessionRequestPermissionResponse{
-				Outcome: SessionPermOutcome{Outcome: "selected", OptionID: "proceed_once"},
-			}, nil
+			id := pickByKind("allow_once", "allow_always")
+			if id == "" {
+				return cancelled, nil
+			}
+			slog.Info("security.tool_granted", "session", session, "tool", req.ToolCall.Title, "mode", "approve-reads", "optionId", id)
+			return &SessionRequestPermissionResponse{Outcome: SessionPermOutcome{Outcome: "selected", OptionID: id}}, nil
 		}
 		slog.Warn("security.tool_denied", "session", session, "tool", req.ToolCall.Title, "reason", "approve-reads:write-blocked")
-		return &SessionRequestPermissionResponse{
-			Outcome: SessionPermOutcome{Outcome: "cancelled"},
-		}, nil
+		return cancelled, nil
 	default: // "approve-all"
-		// Prefer server-wide approval so all subsequent goclaw-bridge tool calls skip confirmation.
-		optionID := "proceed_once"
-		for _, pref := range []string{"proceed_always_server", "proceed_always_tool", "proceed_once"} {
-			if available[pref] {
-				optionID = pref
-				break
-			}
+		// Prefer allow_once over allow_always so the operator policy still gates
+		// each tool call individually; fall back to allow_always if only that
+		// is offered.
+		id := pickByKind("allow_once", "allow_always")
+		if id == "" {
+			slog.Warn("security.tool_denied", "session", session, "tool", req.ToolCall.Title, "reason", "no allow option offered")
+			return cancelled, nil
 		}
-		slog.Info("security.tool_granted", "session", session, "tool", req.ToolCall.Title, "mode", "approve-all", "optionId", optionID)
-		return &SessionRequestPermissionResponse{
-			Outcome: SessionPermOutcome{Outcome: "selected", OptionID: optionID},
-		}, nil
+		slog.Info("security.tool_granted", "session", session, "tool", req.ToolCall.Title, "mode", "approve-all", "optionId", id)
+		return &SessionRequestPermissionResponse{Outcome: SessionPermOutcome{Outcome: "selected", OptionID: id}}, nil
 	}
 }
 

@@ -257,6 +257,10 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 		}
 	}
 
+	// Apply vendor-specific default args that goclaw's deployment model
+	// requires for an ACP binary to function correctly inside our sandbox.
+	args = applyVendorDefaultArgs(binary, args)
+
 	// poolKey uniquely identifies a subprocess configuration so that providers
 	// differing in any of the five dimensions always spawn separate processes.
 	// permMode is included explicitly; it is no longer injected into CLI args
@@ -889,4 +893,26 @@ func acpInputTokens(msgs []Message) int {
 		total += acpEstimateTokens(m.Content)
 	}
 	return total
+}
+
+// applyVendorDefaultArgs appends vendor-specific CLI flags that goclaw's
+// deployment model requires for the binary to behave correctly in ACP mode.
+// Each entry is appended unconditionally when goclaw spawns the binary, so
+// callers should not rely on the user's shell config or per-folder state.
+//
+// Current rules (keyed by filepath.Base of the binary path):
+//
+//   - gemini: append "--skip-trust" so MCP discovery runs even when the
+//     per-session cwd lives under an untrusted parent in
+//     ~/.gemini/trustedFolders.json. ACP sessions always run inside a
+//     goclaw-managed sandbox, so the user-facing trust gate is moot here.
+//
+// Add new vendor entries here rather than scattering binary-name checks
+// across the call sites.
+func applyVendorDefaultArgs(binary string, args []string) []string {
+	switch filepath.Base(binary) {
+	case "gemini":
+		return append(args, "--skip-trust")
+	}
+	return args
 }
