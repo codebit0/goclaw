@@ -246,6 +246,7 @@ type KillTerminalRequest struct {
 
 type KillTerminalResponse struct{}
 
+// RequestPermissionRequest is the legacy Claude CLI "permission/request" shape.
 type RequestPermissionRequest struct {
 	ToolName    string `json:"toolName"`
 	Description string `json:"description"`
@@ -253,4 +254,38 @@ type RequestPermissionRequest struct {
 
 type RequestPermissionResponse struct {
 	Outcome string `json:"outcome"` // "proceed_always", "approved", "denied"
+}
+
+// SessionRequestPermissionRequest is the ACP-spec session/request_permission
+// payload (sent by Gemini CLI). Differs from the Claude CLI legacy shape: the
+// agent enumerates options upfront (allow_once / allow_always / reject_once /
+// reject_always) and the client must echo back the chosen optionId.
+type SessionRequestPermissionRequest struct {
+	SessionID string             `json:"sessionId"`
+	Options   []SessionPermOpt   `json:"options"`
+	ToolCall  SessionPermToolRef `json:"toolCall"`
+}
+
+type SessionPermOpt struct {
+	OptionID string `json:"optionId"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"` // allow_once | allow_always | reject_once | reject_always
+}
+
+type SessionPermToolRef struct {
+	ToolCallID string `json:"toolCallId"`
+	Status     string `json:"status"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind,omitempty"`
+}
+
+// SessionRequestPermissionResponse matches the spec's nested outcome shape:
+// {"outcome":{"outcome":"cancelled"}} or {"outcome":{"outcome":"selected","optionId":"..."}}
+type SessionRequestPermissionResponse struct {
+	Outcome SessionPermOutcome `json:"outcome"`
+}
+
+type SessionPermOutcome struct {
+	Outcome  string `json:"outcome"`             // "cancelled" or "selected"
+	OptionID string `json:"optionId,omitempty"`  // required when outcome="selected"
 }

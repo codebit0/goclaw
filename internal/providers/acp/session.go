@@ -14,7 +14,7 @@ func (p *ACPProcess) Initialize(ctx context.Context) error {
 	defer cancel()
 	req := InitializeRequest{
 		ProtocolVersion: 1,
-		ClientInfo:      ClientInfo{Name: "GoClaw", Version: "1.0"},
+		ClientInfo:      ClientInfo{Name: "", Version: "1.0"},
 		Capabilities:    ClientCaps{},
 	}
 	var resp InitializeResponse

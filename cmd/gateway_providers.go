@@ -416,7 +416,8 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 
 // registerACPFromConfig registers an ACP provider from config file settings.
 // workspace is the gateway-level default workspace (cfg.Agents.Defaults.Workspace),
-// used to compute --include-directories for workspace-relative skill slots.
+// used to compute candidate directories that gemini exposes via
+// --include-directories (per-binary gating happens inside the provider).
 func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig, gatewayAddr, gatewayToken, workspace string) {
 	if _, err := exec.LookPath(cfg.Binary); err != nil {
 		slog.Warn("acp: binary not found, skipping", "binary", cfg.Binary, "error", err)
@@ -432,7 +433,9 @@ func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig, g
 	if workDir == "" {
 		workDir = defaultACPWorkDir()
 	}
-	var opts []providers.ACPOption
+	opts := []providers.ACPOption{
+		providers.WithIncludeDirectories(acpSkillCandidateDirs(workspace)),
+	}
 	if cfg.Model != "" {
 		opts = append(opts, providers.WithACPModel(cfg.Model))
 	}
@@ -442,11 +445,10 @@ func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig, g
 	if fn := buildACPMcpServersFunc(gatewayAddr, gatewayToken, nil); fn != nil {
 		opts = append(opts, providers.WithACPMcpServersFunc(fn))
 	}
-	finalArgs := enrichGeminiACPArgs(cfg.Binary, cfg.Args, workspace)
 	registry.Register(providers.NewACPProvider(
-		cfg.Binary, finalArgs, workDir, idleTTL, tools.DefaultDenyPatterns(), opts...,
+		cfg.Binary, cfg.Args, workDir, idleTTL, tools.DefaultDenyPatterns(), opts...,
 	))
-	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary, "args", finalArgs)
+	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary, "args", cfg.Args)
 }
 
 // buildACPMCPServerLookup returns a lookup function that lists every enabled
@@ -638,13 +640,13 @@ func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData, ga
 	acpOpts := []providers.ACPOption{
 		providers.WithACPName(p.Name),
 		providers.WithACPModel(p.Name),
+		providers.WithIncludeDirectories(acpSkillCandidateDirs(workspace)),
 	}
 	if fn := buildACPMcpServersFunc(gatewayAddr, gatewayToken, lookup); fn != nil {
 		acpOpts = append(acpOpts, providers.WithACPMcpServersFunc(fn))
 	}
-	finalArgs := enrichGeminiACPArgs(binary, settings.Args, workspace)
 	registry.RegisterForTenant(p.TenantID, providers.NewACPProvider(
-		binary, finalArgs, workDir, idleTTL, tools.DefaultDenyPatterns(),
+		binary, settings.Args, workDir, idleTTL, tools.DefaultDenyPatterns(),
 		acpOpts...,
 	))
 	slog.Info("registered provider from DB", "name", p.Name, "type", "acp")
@@ -655,22 +657,12 @@ func defaultACPWorkDir() string {
 	return filepath.Join(config.ResolvedDataDirFromEnv(), "acp-workspaces")
 }
 
-// enrichGeminiACPArgs adds --include-directories flags so the Gemini CLI
-// workspace sandbox can read goclaw-managed skill content alongside the agent's
-// own working directory.
-//
-// Without this, Gemini's built-in fs tools (glob, read_file) reject any path
-// outside the cwd, so prompts like "list /home/user/.goclaw/data/skills-store"
-// fail even though the goclaw MCP bridge could fulfill them.
-//
-// Applies only when the binary is "gemini" (via PATH or absolute path).
-// No-op for claude, codex, or any other ACP-compatible binary, since their
-// sandboxing semantics differ.
-//
-// Mirrors the five filesystem-backed skill source slots that
+// acpSkillCandidateDirs enumerates the filesystem-backed skill source
+// directories that should be exposed to gemini via --include-directories.
+// Returns paths regardless of existence; the provider stat-filters before
+// emitting flags. Mirrors the five filesystem slots that
 // internal/skills/loader.go reads at runtime (builtinSkills is binary-embedded,
-// not a filesystem path, so it is omitted). Paths that do not exist on disk
-// are skipped to avoid Gemini CLI warnings about missing workspace entries.
+// so it is omitted).
 //
 // Sources mirrored:
 //   - workspaceSkills      : <workspace>/skills
@@ -679,43 +671,30 @@ func defaultACPWorkDir() string {
 //   - globalSkills         : <dataDir>/skills
 //   - personalAgentSkills  : ~/.agents/skills
 //
-// Note: bundled-skills (seeder source) is intentionally NOT included — the
-// seeder copies its content into skills-store, so exposing bundled-skills
-// would duplicate trees in the agent workspace.
-func enrichGeminiACPArgs(binary string, args []string, workspace string) []string {
-	base := filepath.Base(binary)
-	if base != "gemini" {
-		return args
-	}
+// bundled-skills (seeder source) is intentionally NOT included — the seeder
+// copies its content into skills-store, so exposing bundled-skills would
+// duplicate trees in the agent workspace.
+//
+// Per-binary gating (only gemini honors --include-directories) and
+// vendor-specific defaults like --skip-trust live in providers.NewACPProvider.
+// This function only assembles the candidate list.
+func acpSkillCandidateDirs(workspace string) []string {
 	dataDir := config.ResolvedDataDirFromEnv()
-
-	candidates := []string{
+	dirs := []string{
 		filepath.Join(dataDir, "skills-store"), // managedSkillsDir
 		filepath.Join(dataDir, "skills"),       // globalSkills
 	}
 	if workspace != "" {
 		ws := config.ExpandHome(workspace)
-		candidates = append(candidates,
+		dirs = append(dirs,
 			filepath.Join(ws, "skills"),            // workspaceSkills
 			filepath.Join(ws, ".agents", "skills"), // projectAgentSkills
 		)
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		candidates = append(candidates,
+		dirs = append(dirs,
 			filepath.Join(home, ".agents", "skills"), // personalAgentSkills
 		)
 	}
-
-	extras := make([]string, 0, len(candidates)*2)
-	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		info, err := os.Stat(p)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		extras = append(extras, "--include-directories", p)
-	}
-	return append(append([]string{}, args...), extras...)
+	return dirs
 }

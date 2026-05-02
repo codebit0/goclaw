@@ -32,6 +32,7 @@ type ACPProvider struct {
 	permMode     string
 	poolKey      string // key for the shared process in the pool (binary + args)
 	mcpServersFn func(context.Context) []acp.McpServer // resolved per session
+	includeDirs  []string                              // candidate dirs appended as --include-directories for gemini
 
 	acpSessions sync.Map // goclawSessionKey → *acpSessionEntry
 	sessionMu   sync.Map // goclawSessionKey → *sync.Mutex (prevents concurrent session creation)
@@ -80,22 +81,52 @@ func WithACPMcpServersFunc(fn func(context.Context) []acp.McpServer) ACPOption {
 	}
 }
 
+// WithIncludeDirectories registers candidate directories that should be exposed
+// to the agent's filesystem sandbox. The actual binary gating happens in
+// NewACPProvider, which only emits `--include-directories <dir>` pairs for
+// gemini and stat-filters non-existent entries. Storing the list on the
+// provider for non-gemini binaries is harmless (never consumed downstream).
+func WithIncludeDirectories(dirs []string) ACPOption {
+	return func(p *ACPProvider) {
+		p.includeDirs = dirs
+	}
+}
+
 // NewACPProvider creates a provider that orchestrates ACP agents as subprocesses.
 func NewACPProvider(binary string, args []string, workDir string, idleTTL time.Duration, denyPatterns []*regexp.Regexp, opts ...ACPOption) *ACPProvider {
-	// Pool key identifies the shared process: binary + args combination
-	poolKey := binary
-	if len(args) > 0 {
-		poolKey += "|" + strings.Join(args, " ")
-	}
-
 	p := &ACPProvider{
 		name:         "acp",
 		defaultModel: "claude",
-		poolKey:      poolKey,
 		done:         make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// Gemini sandbox needs --include-directories to read goclaw skill paths
+	// outside the cwd. Non-gemini binaries (claude, codex) handle filesystem
+	// access differently, so includeDirs is a no-op for them.
+	if filepath.Base(binary) == "gemini" && len(p.includeDirs) > 0 {
+		for _, d := range p.includeDirs {
+			if d == "" {
+				continue
+			}
+			if info, err := os.Stat(d); err == nil && info.IsDir() {
+				args = append(args, "--include-directories", d)
+			}
+		}
+	}
+
+	// Apply vendor-specific default args that goclaw's deployment model
+	// requires for an ACP binary to function correctly inside our sandbox.
+	args = applyVendorDefaultArgs(binary, args)
+
+	// Pool key identifies the shared process: binary + final args combination.
+	// Computed after args mutation so processes spawned with different
+	// include-directories or vendor defaults are isolated correctly.
+	p.poolKey = binary
+	if len(args) > 0 {
+		p.poolKey += "|" + strings.Join(args, " ")
 	}
 
 	var bridgeOpts []acp.ToolBridgeOption
@@ -424,4 +455,26 @@ func mapStopReason(resp *acp.PromptResponse) string {
 	default:
 		return "stop"
 	}
+}
+
+// applyVendorDefaultArgs appends vendor-specific CLI flags that goclaw's
+// deployment model requires for the binary to behave correctly in ACP mode.
+// Each entry is appended unconditionally when goclaw spawns the binary, so
+// callers should not rely on the user's shell config or per-folder state.
+//
+// Current rules (keyed by filepath.Base of the binary path):
+//
+//   - gemini: append "--skip-trust" so MCP discovery runs even when the
+//     per-session cwd lives under an untrusted parent in
+//     ~/.gemini/trustedFolders.json. ACP sessions always run inside a
+//     goclaw-managed sandbox, so the user-facing trust gate is moot here.
+//
+// Add new vendor entries here rather than scattering binary-name checks
+// across the call sites.
+func applyVendorDefaultArgs(binary string, args []string) []string {
+	switch filepath.Base(binary) {
+	case "gemini":
+		return append(args, "--skip-trust")
+	}
+	return args
 }
