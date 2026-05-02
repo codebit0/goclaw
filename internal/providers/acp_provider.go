@@ -224,11 +224,19 @@ func (p *ACPProvider) resolveSession(ctx context.Context, proc *acp.ACPProcess, 
 			"goclaw_session", goclawKey, "old_sid", entry.id)
 		if proc.AgentCaps().LoadSession {
 			sid, err := proc.LoadSession(ctx, entry.id, sessionDir)
-			if err == nil {
+			// Some agents (notably Gemini CLI variants) return success with an
+			// empty sessionId when session/load can't actually restore — that
+			// would leave the prompt to fail with JSON-RPC -32603. Treat empty
+			// as a soft failure and fall through to NewSession.
+			if err == nil && sid != "" {
 				p.acpSessions.Store(goclawKey, &acpSessionEntry{id: sid, proc: proc, lastUsed: time.Now()})
 				return sid, nil
 			}
-			slog.Warn("acp: session/load failed, creating new session", "old_sid", entry.id, "error", err)
+			if err != nil {
+				slog.Warn("acp: session/load failed, creating new session", "old_sid", entry.id, "error", err)
+			} else {
+				slog.Warn("acp: session/load returned empty sid, creating new session", "old_sid", entry.id)
+			}
 		}
 		// session/load not supported or failed — fall through to create new
 	}
