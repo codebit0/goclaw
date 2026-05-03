@@ -2,6 +2,8 @@ package providers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,27 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/providers/acp"
 )
+
+// dynamicTagRe matches XML-tagged sections of the system prompt that are
+// per-request dynamic and should NOT be persisted to the context file.
+// These are injected inline by extractACPContent for the active turn instead.
+// Go's RE2 has no backreferences — use explicit alternation.
+var dynamicTagRe = regexp.MustCompile(
+	`(?s)<current_reply_target>.*?</current_reply_target>|<extra_context>.*?</extra_context>`,
+)
+
+// multiBlankRe collapses 3+ consecutive newlines to 2 (whitespace normalization).
+var multiBlankRe = regexp.MustCompile(`\n{3,}`)
+
+// stableContextContent returns the system prompt with per-request dynamic tags
+// removed and whitespace normalized — suitable for the persistent context file.
+// Stable across requests as long as the static portion is unchanged, even if
+// chat target / extra prompt vary turn-to-turn.
+func stableContextContent(systemPrompt string) string {
+	s := dynamicTagRe.ReplaceAllString(systemPrompt, "")
+	s = multiBlankRe.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s) + "\n"
+}
 
 // acpSessionEntry tracks a live ACP session for one goclaw conversation.
 type acpSessionEntry struct {
@@ -225,29 +248,59 @@ func (p *ACPProvider) ensureSessionDir(proc *acp.ACPProcess, goclawKey string) s
 	return dir
 }
 
-// writeContextFile writes the system prompt to the per-binary auto-loaded
-// context file in the session workspace (CLAUDE.md / GEMINI.md / AGENTS.md
-// depending on the binary). The agent CLI reads this file automatically from
-// the session cwd, so we don't have to repeat the system prompt on every turn.
+// writeContextFile writes the *stable* portion of the system prompt to the
+// per-binary auto-loaded context file in the session workspace
+// (CLAUDE.md / GEMINI.md / AGENTS.md depending on the binary).
+//
+// Per-request dynamic content (current_reply_target, extra_context) is stripped
+// before writing — those parts are injected inline via extractACPContent each
+// turn, so the file represents only the static identity/tooling/skills view.
+//
+// Comparison uses sha256 of the stable content (cached in-memory + sidecar
+// .sha256 file for crash-safe). Skip-if-same returns false → no disk write,
+// no session invalidation. Returns true only when the file content changed,
+// signaling caller to invalidate the live ACP session so the next request
+// creates a fresh session that loads the updated file.
 //
 // Skips entirely when the binary has no known context-file convention
-// (p.contextFileName == ""): caller will then fall back to in-prompt system
-// instructions via extractACPContent.
-//
-// Skips disk write when content is unchanged. Returns true only when the file
-// was rewritten — that signals the caller to invalidate the live ACP session
-// so the next request creates a fresh session that loads the updated file.
+// (p.contextFileName == ""): caller falls back to in-prompt system instructions.
 func (p *ACPProvider) writeContextFile(sessionDir, systemPrompt string) bool {
 	if p.contextFileName == "" || sessionDir == "" || systemPrompt == "" {
 		return false
 	}
-	path := filepath.Join(sessionDir, p.contextFileName)
-	if existing, err := os.ReadFile(path); err == nil && string(existing) == systemPrompt {
+	stable := stableContextContent(systemPrompt)
+	if stable == "" {
 		return false
 	}
-	if err := os.WriteFile(path, []byte(systemPrompt), 0600); err != nil {
+
+	sum := sha256.Sum256([]byte(stable))
+	hashHex := hex.EncodeToString(sum[:])
+
+	path := filepath.Join(sessionDir, p.contextFileName)
+	hashPath := path + ".sha256"
+
+	// Fast path: hash sidecar matches → no change.
+	if existingHash, err := os.ReadFile(hashPath); err == nil &&
+		strings.TrimSpace(string(existingHash)) == hashHex {
+		return false
+	}
+
+	// Hash mismatch or missing — verify by reading the file too (handles
+	// corrupted sidecar). This protects against false-positive rewrites
+	// when only the sidecar is missing/stale.
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == stable {
+		// Content is correct, just refresh the sidecar.
+		_ = os.WriteFile(hashPath, []byte(hashHex), 0600)
+		return false
+	}
+
+	if err := os.WriteFile(path, []byte(stable), 0600); err != nil {
 		slog.Warn("acp: failed to write context file", "path", path, "error", err)
 		return false
+	}
+	if err := os.WriteFile(hashPath, []byte(hashHex), 0600); err != nil {
+		slog.Warn("acp: failed to write context hash sidecar", "path", hashPath, "error", err)
+		// Non-fatal — file write succeeded, just lose fast-path next time.
 	}
 	return true
 }
