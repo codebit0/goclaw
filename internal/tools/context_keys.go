@@ -142,10 +142,13 @@ func ToolAgentKeyFromCtx(ctx context.Context) string {
 	if v, _ := ctx.Value(ctxAgentKey).(string); v != "" {
 		return v
 	}
-	if rc := store.RunContextFromCtx(ctx); rc != nil {
+	if rc := store.RunContextFromCtx(ctx); rc != nil && rc.AgentToolKey != "" {
 		return rc.AgentToolKey
 	}
-	return ""
+	// Fallback to the canonical store-level reader so callers that set
+	// store.WithAgentKey but not the tools-package key (e.g. ACP MCP bridge
+	// middleware) still resolve correctly.
+	return store.AgentKeyFromContext(ctx)
 }
 
 // WithToolSessionKey injects the parent's session key so subagent announce

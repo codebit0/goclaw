@@ -251,12 +251,21 @@ func bridgeContextMiddleware(gatewayToken string, agentStore store.AgentStore, n
 
 					// Inject per-agent shell deny group overrides so the exec tool
 					// respects the same policy as the normal agent loop.
+					// Also recovers the agent_key (human-readable) from the loaded row
+					// so tools that key off agent_key (sessions_history, sessions_send,
+					// session ownership checks) work via the MCP bridge — only the UUID
+					// is signed in the bridge headers, but downstream readers still need
+					// the agent_key string.
 					if agentStore != nil {
 						ag, err := agentStore.GetByIDUnscoped(ctx, id)
 						if err == nil && ag != nil {
 							groups := ag.ParseShellDenyGroups()
 							if groups != nil {
 								ctx = store.WithShellDenyGroups(ctx, groups)
+							}
+							if ag.AgentKey != "" {
+								ctx = store.WithAgentKey(ctx, ag.AgentKey)
+								ctx = tools.WithToolAgentKey(ctx, ag.AgentKey)
 							}
 						}
 					}
