@@ -85,11 +85,14 @@ func makeCronJobHandler(sched *scheduler.Scheduler, msgBus *bus.MessageBus, cfg 
 		defer cancelCron()
 		cronCtx = store.WithTenantID(cronCtx, job.TenantID)
 
-		// Reset session before each cron run to prevent tool errors from previous
-		// runs from polluting the context and blocking future executions (#294).
-		// Save() persists the empty session to DB so stale data won't reload after restart.
-		// Stateless jobs skip this — they intentionally carry no session history.
-		if !job.Stateless {
+		// Stateless jobs explicitly reset their session before each run — they
+		// carry no history between executions, matching the "Stateless" UI label
+		// and statelessHelp ("each run starts fresh without loading previous
+		// messages"). Stateful (non-stateless) jobs keep prior turns to enable
+		// multi-run dialog.
+		// Save() persists the empty session to DB so stale data won't reload
+		// after restart (#294).
+		if job.Stateless {
 			sessionMgr.Reset(cronCtx, sessionKey)
 			sessionMgr.Save(cronCtx, sessionKey)
 		}
