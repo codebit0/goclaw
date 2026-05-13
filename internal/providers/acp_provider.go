@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,42 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/providers/acp"
 )
+
+//go:embed acp/gemini-deny-policy.toml
+var geminiDenyPolicyTOML []byte
+
+// acpToolRoutingGuidance is injected as the system prompt's stable prefix for
+// every ACP-mode session. ACP runs alongside a host CLI (gemini-cli /
+// claude-cli / codex) that exposes its own native tools sharing short names
+// with goclaw's MCP-bridged tools (read_file, web_search, exec, …). Without
+// explicit routing guidance the agent may pick the host-native version, which
+// is sandboxed to its CWD and cannot resolve paths the goclaw bridge owns
+// (skill registry, agent workspace, tenant data). The MCP-bridged versions
+// are exposed under the "mcp_goclaw_bridge__" prefix
+// (see internal/mcp/bridge_tool.go ensureMCPPrefix).
+const acpToolRoutingGuidance = "# Tool Routing\n" +
+	"\n" +
+	"You have two channels of tools available:\n" +
+	"- Native tools provided by your CLI binary itself\n" +
+	"- MCP-bridged tools prefixed with `mcp_goclaw_bridge__`\n" +
+	"\n" +
+	"When a short tool name appears in this system prompt or in any SKILL.md, check whether " +
+	"a `mcp_goclaw_bridge__<that-name>` tool exists in your tool list. If it does, prefer the " +
+	"prefixed version. If only the native version exists, use the native one as-is.\n" +
+	"\n" +
+	"Do not map names by resemblance — only match exact short names against the prefixed list.\n" +
+	"\n" +
+	"Native tools are sandboxed to your current working directory and cannot resolve paths " +
+	"outside it. The MCP-bridged versions resolve paths through the system that owns this " +
+	"prompt and registered them.\n"
+
+// PromptContribution implements providers.PromptContributor: every ACP-mode
+// session receives acpToolRoutingGuidance as a stable prefix so the agent
+// disambiguates between its host-CLI native tools and the MCP-bridged
+// goclaw versions of the same short names.
+func (p *ACPProvider) PromptContribution() *PromptContribution {
+	return &PromptContribution{StablePrefix: acpToolRoutingGuidance}
+}
 
 // dynamicTagRe matches XML-tagged sections of the system prompt that are
 // per-request dynamic and should NOT be persisted to the context file.
@@ -58,6 +95,7 @@ type ACPProvider struct {
 	mcpServersFn    func(context.Context) []acp.McpServer // resolved per session
 	includeDirs     []string                              // candidate dirs appended as --include-directories for gemini
 	contextFileName string                                // e.g. "GEMINI.md", "CLAUDE.md", "AGENTS.md"; empty = no out-of-band system prompt
+	workDir         string                                // ACP process workdir; used for vendor-default policy file placement
 
 	acpSessions sync.Map // goclawSessionKey → *acpSessionEntry
 	sessionMu   sync.Map // goclawSessionKey → *sync.Mutex (prevents concurrent session creation)
@@ -143,6 +181,7 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 		binary:          binary,
 		defaultModel:    "claude",
 		contextFileName: contextFileNameForBinary(binary),
+		workDir:         workDir,
 		done:            make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -165,7 +204,7 @@ func NewACPProvider(binary string, args []string, workDir string, idleTTL time.D
 
 	// Apply vendor-specific default args that goclaw's deployment model
 	// requires for an ACP binary to function correctly inside our sandbox.
-	args = applyVendorDefaultArgs(binary, args)
+	args = p.applyVendorDefaultArgs(args)
 
 	// Pool key identifies the shared process: binary + final args combination.
 	// Computed after args mutation so processes spawned with different
@@ -669,19 +708,46 @@ func mapStopReason(resp *acp.PromptResponse) string {
 // Each entry is appended unconditionally when goclaw spawns the binary, so
 // callers should not rely on the user's shell config or per-folder state.
 //
-// Current rules (keyed by filepath.Base of the binary path):
+// Current rules (keyed by filepath.Base of p.binary):
 //
 //   - gemini: append "--skip-trust" so MCP discovery runs even when the
 //     per-session cwd lives under an untrusted parent in
 //     ~/.gemini/trustedFolders.json. ACP sessions always run inside a
 //     goclaw-managed sandbox, so the user-facing trust gate is moot here.
+//     Also writes the embedded admin policy that denies native tools shadowing
+//     goclaw MCP equivalents (run_shell_command, read_many_files) to the
+//     provider's workDir and appends "--admin-policy <path>". Falls back
+//     gracefully when the file cannot be written — agent retains native
+//     access in that case rather than crashing the provider.
 //
 // Add new vendor entries here rather than scattering binary-name checks
 // across the call sites.
-func applyVendorDefaultArgs(binary string, args []string) []string {
-	switch filepath.Base(binary) {
+func (p *ACPProvider) applyVendorDefaultArgs(args []string) []string {
+	switch filepath.Base(p.binary) {
 	case "gemini":
-		return append(args, "--skip-trust")
+		args = append(args, "--skip-trust")
+		if path := p.writeGeminiDenyPolicy(); path != "" {
+			args = append(args, "--admin-policy", path)
+		}
 	}
 	return args
+}
+
+// writeGeminiDenyPolicy materializes the embedded gemini deny policy TOML to
+// the provider's workDir and returns the absolute path. Returns "" when
+// workDir is unset or the write fails — caller (applyVendorDefaultArgs) then
+// skips the --admin-policy flag, which is preferable to failing provider
+// construction.
+func (p *ACPProvider) writeGeminiDenyPolicy() string {
+	if p.workDir == "" {
+		return ""
+	}
+	if err := os.MkdirAll(p.workDir, 0o755); err != nil {
+		return ""
+	}
+	path := filepath.Join(p.workDir, "gemini-deny-policy.toml")
+	if err := os.WriteFile(path, geminiDenyPolicyTOML, 0o644); err != nil {
+		return ""
+	}
+	return path
 }
