@@ -1,0 +1,70 @@
+# goclaw-managed admin policy for gemini-cli ACP sessions.
+#
+# Deterministic tool routing: deny every gemini-cli native tool whose
+# short name shadows (or collides with) a goclaw MCP-bridged equivalent.
+# The agent's only remaining path for these capabilities is the
+# `mcp_goclaw_bridge__*` prefixed version, which routes through goclaw's
+# audit, tenant scope, sandbox, and skill registry.
+#
+# Why deny each entry:
+#   - read_file, write_file, replace : native is sandboxed to the host-CLI
+#       CWD and cannot resolve paths the goclaw bridge owns (skill registry,
+#       tenant data, agent workspace, vault). MCP versions cross-CWD and
+#       run through AllowPaths/workspace boundary checks + vault sync.
+#   - run_shell_command            : native lacks DefaultDenyPatterns,
+#       audit logging, tenant scope, per-agent shell deny groups, sandbox
+#       routing. goclaw's `exec` (via MCP bridge) provides all of these.
+#   - read_many_files              : no goclaw equivalent; force the agent
+#       to loop `mcp_goclaw_bridge__read_file` per file so each read passes
+#       boundary checks.
+#   - list_directory, glob, grep_search : sandboxed to host-CLI CWD; cannot
+#       see skill registry / vault / cross-tenant paths the bridge serves.
+#   - save_memory                  : gemini-cli's memory is process-local
+#       and orthogonal to goclaw's 3-tier memory (working/episodic/
+#       semantic). Mixing them creates split-brain state.
+#   - web_fetch, google_web_search : native bypasses goclaw's SSRF
+#       protection, rate limiting, and tenant-scoped web caches.
+#   - activate_skill               : gemini-cli ships its own skill
+#       activation system that expects gemini-format skills. goclaw skills
+#       are exposed via `use_skill` / `skill_search` MCP tools — denying
+#       activate_skill prevents the LLM from picking the wrong loader.
+#   - invoke_agent                 : gemini-cli's native subagent system
+#       does not honor goclaw's agent_links delegation graph or scheduler
+#       lanes. `spawn` / `delegate` MCP tools are the goclaw path.
+#   - enter_plan_mode, exit_plan_mode : gemini's plan mode is orthogonal
+#       to goclaw's pipeline; allowing it splits control flow.
+#
+# Tools left allowed (no goclaw conflict):
+#   ask_user, write_todos, tracker_*, complete_task, update_topic,
+#   get_internal_docs — these are gemini-cli interactive UI helpers
+#   without goclaw equivalents.
+#
+# Match semantics: gemini's PolicyEngine matches by short tool name
+# only — `mcp_goclaw_bridge__read_file` calls are NOT affected by a
+# rule with toolName = "read_file" (verified against
+# getToolAliases() in the gemini-cli bundle).
+#
+# Admin tier (5) outranks default/extension/workspace tiers regardless
+# of priority, so this file's rules cannot be overridden by user or
+# project policies.
+
+[[rule]]
+toolName = [
+    "read_file",
+    "write_file",
+    "replace",
+    "run_shell_command",
+    "read_many_files",
+    "list_directory",
+    "glob",
+    "grep_search",
+    "save_memory",
+    "web_fetch",
+    "google_web_search",
+    "activate_skill",
+    "invoke_agent",
+    "enter_plan_mode",
+    "exit_plan_mode",
+]
+decision = "deny"
+priority = 999
